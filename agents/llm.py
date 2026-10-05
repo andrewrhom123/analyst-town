@@ -17,6 +17,8 @@ from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
 
 import anthropic
+from anthropic.types.beta import BetaMessage
+from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from database.db import session_scope
@@ -190,7 +192,7 @@ def parse_call(kind: str, output_format, system: str, messages: list, *, ticker:
                model: str | None = None, effort: str | None = None, max_tokens: int = 16000):
     """One structured-output call with refusal fallback. Returns (parsed, message)."""
     model = model or config.LIGHT_MODEL
-    message = get_client().beta.messages.parse(
+    raw = get_client().beta.messages.with_raw_response.parse(
         model=model,
         max_tokens=max_tokens,
         betas=[FALLBACK_BETA],
@@ -200,6 +202,18 @@ def parse_call(kind: str, output_format, system: str, messages: list, *, ticker:
         messages=messages,
         output_format=output_format,
     )
+    try:
+        message = raw.parse()
+    except ValidationError as exc:
+        # The SDK validates the JSON while parsing, so a response cut off at max_tokens surfaces here as
+        # "EOF while parsing ..." before we can see stop_reason. Price it and report the real cause.
+        message = BetaMessage.model_validate(raw.http_response.json())
+        record_cost(kind, message, ticker)
+        if message.stop_reason == "max_tokens":
+            raise AnalystError(f"{kind}: output truncated at max_tokens={max_tokens} "
+                               f"({message.usage.output_tokens} output tokens)") from exc
+        check_stop(message)
+        raise AnalystError(f"{kind}: output did not match the schema: {exc}") from exc
     record_cost(kind, message, ticker)
     check_stop(message)
     if message.parsed_output is None:

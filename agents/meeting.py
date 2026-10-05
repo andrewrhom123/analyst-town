@@ -29,6 +29,9 @@ from utils import config
 
 logger = logging.getLogger(__name__)
 
+# Round 2 for a wide coverage list (Fintech has 8 tickers) plus thinking can outgrow parse_call's 16k default.
+MEETING_MAX_TOKENS = 32000
+
 
 # --- Schemas ----------------------------------------------------------------------------------
 
@@ -62,7 +65,7 @@ class Revision(BaseModel):
     ticker: str
     revised: bool = Field(description="False keeps the current thesis unchanged")
     change_summary: str = Field(description="What changed and why, or why the call stands")
-    thesis: TradingThesisOut = Field(description="The full thesis after the meeting (repeat it unchanged if revised is false)")
+    thesis: TradingThesisOut | None = Field(description="The full revised thesis; null when revised is false (keeps the output short)")
 
 
 class Response(BaseModel):
@@ -153,6 +156,7 @@ def _run(meeting_id: int) -> dict:
             "meeting", Contribution, _analyst_system(a["analyst"], a["agent_type"], symbols, analyst_lessons(a["analyst_id"])),
             [{"role": "user", "content": context + "\n\nRound 1: give your market read, challenge 1-3 colleagues' calls, "
                                                    "and note cross-ticker implications for your own names."}],
+            max_tokens=MEETING_MAX_TOKENS,
         )
         transcript["contributions"][key] = {"analyst": a["analyst"], **contribution.model_dump()}
 
@@ -172,15 +176,16 @@ def _run(meeting_id: int) -> dict:
                   f"\n<challenges_to_you>\n{_dump(incoming) or '[]'}\n</challenges_to_you>"
                   f"\n<cross_references_involving_you>\n{_dump(cross) or '[]'}\n</cross_references_involving_you>"
                   "\n\nRound 2: respond to each challenge, then give one revision per ticker you cover (revise only "
-                  "where the discussion warrants it), and note any generalizable lessons.")
+                  "where the discussion warrants it; set thesis to null for unchanged calls), and note any "
+                  "generalizable lessons.")
         response, message = llm.parse_call(
             "meeting", Response, _analyst_system(a["analyst"], a["agent_type"], sorted(symbols), analyst_lessons(a["analyst_id"])),
-            [{"role": "user", "content": prompt}],
+            [{"role": "user", "content": prompt}], max_tokens=MEETING_MAX_TOKENS,
         )
         transcript["responses"][key] = {"analyst": a["analyst"], "incoming": incoming, **response.model_dump()}
         for rev in response.revisions:
             ctx = get_context(rev.ticker)
-            if ctx and ctx.symbol in symbols and rev.revised:
+            if ctx and ctx.symbol in symbols and rev.revised and rev.thesis:
                 save_thesis(ctx, rev.thesis, "meeting", f"meeting #{meeting_id}: {rev.change_summary[:200]}", message.model)
         with session_scope() as s:
             for lesson in response.lessons_learned:
@@ -191,7 +196,7 @@ def _run(meeting_id: int) -> dict:
         "meeting", Minutes,
         "You chair the research pod's daily meeting and write crisp minutes for the PM: what was debated, who "
         "changed their mind and why, which cross-ticker dependencies matter, and open action items. Markdown, no filler.",
-        [{"role": "user", "content": f"<transcript>\n{_dump(transcript)}\n</transcript>\n\nWrite the minutes and one note per ticker discussed."}],
+        [{"role": "user", "content": f"<transcript>\n{_dump(transcript)}\n</transcript>\n\nWrite the minutes and one note per ticker discussed."}], max_tokens=MEETING_MAX_TOKENS,
     )
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     for note in minutes.ticker_notes:
