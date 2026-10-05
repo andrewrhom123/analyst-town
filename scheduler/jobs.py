@@ -4,12 +4,16 @@
   Mon-Fri 8:00 and 17:00            filing_check    new 10-Q/10-K/earnings 8-K -> deep dive             $0
   daily 7:15                        news_refresh    NewsAPI headlines -> latest_events.md                $0
   Mon-Fri 16:30                     daily meeting   analysts challenge and revise theses               ~$1
-  every 1 min                       process_queue   starts a worker per idle agent; all agents research in parallel
+  every 1 min                       process_queue   build-out lane (parallel) + daily lane (one job at a time)
   daily 0:05                        daily_reset     budget-deferred jobs go back in the queue
 
-Initial research phase: every agent works its own queue at the same time (one job per agent at a time,
-so at most one concurrent job per agent). Each job reserves its estimated cost against the daily budget
-before starting, so parallel jobs can't overshoot it; a job that doesn't fit is deferred.
+Two lanes:
+  * build-out: initial-coverage deep dives (first model/memo/thesis per ticker) are paid from the one-time
+    BUILDOUT_BUDGET_USD pool and run in parallel, one worker per agent, so every name gets up to speed fast.
+    When the pool is used up, leftover initial jobs fall back to the daily lane.
+  * daily: everything else (thesis updates on price moves, deep dives on new filings / thesis flags) runs one
+    job at a time under DAILY_BUDGET_USD, with deep dives spaced >= DEEP_DIVE_MIN_GAP_MINUTES apart.
+Every job reserves its estimated cost against its pool before it starts, so concurrent jobs can't overshoot.
 
 Run standalone as a worker:  python -m scheduler.jobs
 """
@@ -42,9 +46,11 @@ from utils import config
 logger = logging.getLogger(__name__)
 EASTERN = ZoneInfo("America/New_York")
 _budget_lock = threading.Lock()
-_reserved: dict[int, float] = {}  # job id -> estimated cost of jobs currently running
-_busy_agents: set[int] = set()  # analyst ids with a worker thread running
+_reserved: dict[int, tuple[str, float]] = {}  # job id -> (pool, estimated cost) of jobs currently running
+_busy_agents: set[int] = set()  # analyst ids with a build-out worker running
+_daily_busy = threading.Event()  # set while the daily lane is running a job
 _busy_lock = threading.Lock()
+BUILDOUT, DAILY = "buildout", "daily"
 
 
 def _aware(dt: datetime | None) -> datetime | None:
@@ -78,32 +84,64 @@ def _last_deep_dive_start() -> datetime | None:
         return _aware(job.started_at) if job else None
 
 
-def _next_job(analyst_id: int) -> Job | None:
-    """This agent's next job: thesis updates first (cheap, time-sensitive), then deep dives, oldest first."""
+def _queued(*conditions) -> Job | None:
     with session_scope() as s:
-        base = select(Job).join(Ticker, Job.ticker_id == Ticker.id).where(Job.status == "queued", Ticker.analyst_id == analyst_id)
-        return (s.scalar(base.where(Job.kind == "thesis_update").order_by(Job.created_at).limit(1))
-                or s.scalar(base.where(Job.kind == "deep_dive").order_by(Job.created_at).limit(1)))
+        return s.scalar(select(Job).join(Ticker, Job.ticker_id == Ticker.id)
+                        .where(Job.status == "queued", *conditions).order_by(Job.created_at).limit(1))
 
 
-def _agents_with_queued_jobs() -> list[int]:
+def _next_buildout_job(analyst_id: int) -> Job | None:
+    return _queued(Job.kind == "deep_dive", Job.trigger == "initial", Ticker.analyst_id == analyst_id)
+
+
+def _next_daily_job(buildout_is_open: bool) -> Job | None:
+    """Thesis updates first (cheap, time-sensitive); deep dives only after the spacing gap (manual ones skip it).
+    Initial-coverage deep dives stay in the build-out lane while its pool is open."""
+    job = _queued(Job.kind == "thesis_update")
+    if job:
+        return job
+    job = _queued(Job.kind == "deep_dive", *([Job.trigger != "initial"] if buildout_is_open else []))
+    if job is None:
+        return None
+    last = _last_deep_dive_start()
+    if job.trigger != "manual" and last and datetime.now(timezone.utc) - last < timedelta(minutes=config.DEEP_DIVE_MIN_GAP_MINUTES):
+        return None
+    return job
+
+
+def _agents_with_buildout_jobs() -> list[int]:
     with session_scope() as s:
         return list(s.scalars(select(Ticker.analyst_id).join(Job, Job.ticker_id == Ticker.id)
-                              .where(Job.status == "queued").distinct()))
+                              .where(Job.status == "queued", Job.kind == "deep_dive", Job.trigger == "initial").distinct()))
 
 
-def _reserve(job_id: int, kind: str, estimate: float) -> tuple[bool, str]:
-    """Atomically check the budget, counting what already-running jobs are expected to spend."""
+def _reserved_in(pool: str) -> float:
+    return sum(est for p, est in _reserved.values() if p == pool)
+
+
+def _reserve(job_id: int, pool: str, kind: str, estimate: float) -> tuple[bool, str]:
+    """Atomically check the pool's budget, counting what already-running jobs are expected to spend."""
     with _budget_lock:
-        ok, why = llm.can_spend(kind, estimate + sum(_reserved.values()))
+        if pool == BUILDOUT:
+            spent = llm.buildout_spent()
+            ok = spent + _reserved_in(BUILDOUT) + estimate <= config.BUILDOUT_BUDGET_USD
+            why = "" if ok else f"build-out pool: spent ${spent:.2f} of ${config.BUILDOUT_BUDGET_USD:.2f}"
+        else:
+            ok, why = llm.can_spend(kind, estimate + _reserved_in(DAILY))
         if ok:
-            _reserved[job_id] = estimate
+            _reserved[job_id] = (pool, estimate)
         return ok, why
 
 
 def _release(job_id: int) -> None:
     with _budget_lock:
         _reserved.pop(job_id, None)
+
+
+def buildout_open() -> bool:
+    """Whether the one-time pool can still fund another initial deep dive."""
+    with _budget_lock:
+        return llm.buildout_spent() + _reserved_in(BUILDOUT) + config.DEEP_DIVE_ESTIMATE_USD <= config.BUILDOUT_BUDGET_USD
 
 
 def _claim(job_id: int) -> bool:
@@ -120,21 +158,28 @@ def _finish(job_id: int, status: str, error: str | None = None, cost: float = 0.
         job.finished_at = datetime.now(timezone.utc)
 
 
-def run_job(job_id: int) -> dict:
+def run_job(job_id: int, pool: str | None = None) -> dict:
+    """Run a claimed job. With `pool`, its cost was already reserved by the caller; otherwise it is
+    checked against the daily budget here and deferred if it doesn't fit."""
     with session_scope() as s:
         job = s.get(Job, job_id)
         kind, reason, trigger = job.kind, job.reason, job.trigger
         symbol = s.get(Ticker, job.ticker_id).symbol
     estimate = config.DEEP_DIVE_ESTIMATE_USD if kind == "deep_dive" else config.THESIS_UPDATE_ESTIMATE_USD
     # Your own requests (manual) may use the whole budget; autonomous work keeps the meeting/ask reserves.
-    ok, why = _reserve(job_id, "ask" if trigger == "manual" else kind, estimate)
-    if not ok:
-        _finish(job_id, "deferred", why)
-        logger.info("Deferred %s for %s: %s", kind, symbol, why)
-        return {"job_id": job_id, "status": "deferred", "error": why}
-    spent_before = llm.spent_today()  # day-wide total; with parallel agents a job's cost includes its neighbours'
+    if pool is None:
+        ok, why = _reserve(job_id, DAILY, "ask" if trigger == "manual" else kind, estimate)
+        if not ok:
+            _finish(job_id, "deferred", why)
+            logger.info("Deferred %s for %s: %s", kind, symbol, why)
+            return {"job_id": job_id, "status": "deferred", "error": why}
+    spend = llm.buildout_spent if pool == BUILDOUT else llm.spent_today
+    spent_before = spend()  # pool-wide total; with parallel agents a job's cost can include its neighbours'
     try:
-        if kind == "deep_dive":
+        if kind == "deep_dive" and pool == BUILDOUT:
+            with llm.buildout_scope(symbol):
+                result = run_deep_dive(symbol, trigger=f"{trigger}: {reason}")
+        elif kind == "deep_dive":
             result = run_deep_dive(symbol, trigger=f"{trigger}: {reason}")
         else:
             thesis = update_thesis(symbol, trigger, reason)
@@ -142,45 +187,71 @@ def run_job(job_id: int) -> dict:
             result = {"ticker": symbol, "signal": thesis["signal"], "headline": thesis["headline"]}
             if thesis.get("needs_deep_dive"):
                 enqueue("deep_dive", symbol, thesis.get("deep_dive_reason") or "flagged by thesis update", "thesis_update")
-        _finish(job_id, "done", cost=llm.spent_today() - spent_before)
+        _finish(job_id, "done", cost=spend() - spent_before)
         return {"job_id": job_id, "status": "done", **result}
     except Exception as exc:
         logger.exception("Job %s (%s %s) failed", job_id, kind, symbol)
-        _finish(job_id, "failed", f"{type(exc).__name__}: {exc}", cost=llm.spent_today() - spent_before)
+        _finish(job_id, "failed", f"{type(exc).__name__}: {exc}", cost=spend() - spent_before)
         return {"job_id": job_id, "status": "failed", "error": str(exc)}
     finally:
         _release(job_id)
 
 
-def _agent_worker(analyst_id: int) -> None:
-    """Work through one agent's queue until it is empty or the budget defers a job."""
+def _buildout_worker(analyst_id: int) -> None:
+    """Work through one agent's initial deep dives on the build-out pool until done or the pool runs dry."""
     try:
-        while (job := _next_job(analyst_id)) is not None:
+        while (job := _next_buildout_job(analyst_id)) is not None:
+            ok, why = _reserve(job.id, BUILDOUT, "deep_dive", config.DEEP_DIVE_ESTIMATE_USD)
+            if not ok:
+                logger.info("Build-out pool closed (%s); remaining initial jobs go to the daily lane", why)
+                break  # job stays queued for the daily lane
             if not _claim(job.id):
+                _release(job.id)
                 continue  # another worker took it
-            if run_job(job.id)["status"] == "deferred":
-                break  # out of budget for today; daily_reset re-queues it
+            run_job(job.id, pool=BUILDOUT)
     except Exception:
-        logger.exception("Agent worker %s crashed", analyst_id)
+        logger.exception("Build-out worker for analyst %s crashed", analyst_id)
     finally:
         with _busy_lock:
             _busy_agents.discard(analyst_id)
 
 
-def process_queue() -> list[int]:
-    """Start a worker thread for every agent that has queued work and isn't already busy, so all agents
-    research at the same time. Returns the analyst ids started. Non-blocking."""
+def _daily_worker(job_id: int) -> None:
+    try:
+        run_job(job_id)
+    finally:
+        _daily_busy.clear()
+
+
+def process_queue() -> dict:
+    """Non-blocking tick: start a build-out worker for every agent with initial deep dives (all agents in
+    parallel while the pool lasts) and, if the daily lane is idle, start its next job."""
     started = []
-    for analyst_id in _agents_with_queued_jobs():
-        with _busy_lock:
-            if analyst_id in _busy_agents:
-                continue
-            _busy_agents.add(analyst_id)
-        threading.Thread(target=_agent_worker, args=(analyst_id,), name=f"agent-{analyst_id}", daemon=True).start()
-        started.append(analyst_id)
-    if started:
-        logger.info("Started agent workers: %s", started)
-    return started
+    is_open = buildout_open()
+    if is_open:
+        with session_scope() as s:  # initial jobs deferred by the daily budget get another chance on the pool
+            s.execute(update(Job).where(Job.status == "deferred", Job.kind == "deep_dive", Job.trigger == "initial")
+                      .values(status="queued", error=None))
+        for analyst_id in _agents_with_buildout_jobs():
+            with _busy_lock:
+                if analyst_id in _busy_agents:
+                    continue
+                _busy_agents.add(analyst_id)
+            threading.Thread(target=_buildout_worker, args=(analyst_id,), name=f"buildout-{analyst_id}", daemon=True).start()
+            started.append(analyst_id)
+        if started:
+            logger.info("Started build-out workers for analysts %s", started)
+
+    daily_job = None
+    with _busy_lock:
+        if not _daily_busy.is_set():
+            job = _next_daily_job(is_open)
+            if job is not None and _claim(job.id):
+                _daily_busy.set()
+                daily_job = job.id
+    if daily_job is not None:
+        threading.Thread(target=_daily_worker, args=(daily_job,), name="daily-lane", daemon=True).start()
+    return {"buildout_open": is_open, "buildout_workers_started": started, "daily_job": daily_job}
 
 
 # --- Monitors (no Claude) ---------------------------------------------------------------------

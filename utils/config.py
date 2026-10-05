@@ -72,6 +72,10 @@ ASK_RESERVE_USD = _float("ASK_RESERVE_USD", 0.5)
 DEEP_DIVE_ESTIMATE_USD = _float("DEEP_DIVE_ESTIMATE_USD", 1.0)
 THESIS_UPDATE_ESTIMATE_USD = _float("THESIS_UPDATE_ESTIMATE_USD", 0.06)
 MEETING_ESTIMATE_USD = _float("MEETING_ESTIMATE_USD", 1.2)
+# One-time pool for the initial build-out: first deep dive (model, memo, pitch, thesis) on every ticker.
+# Separate from the daily budget; initial-coverage deep dives run in parallel (one per agent) until it's
+# used up or every ticker is covered. Anything left over then waits for the daily budget.
+BUILDOUT_BUDGET_USD = _float("BUILDOUT_BUDGET_USD", 30.0)
 
 # --- Real-time monitoring ---------------------------------------------------
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")

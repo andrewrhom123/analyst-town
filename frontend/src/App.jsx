@@ -34,7 +34,7 @@ function SettingsModal({ onClose }) {
 
 export default function App() {
   const [modal, setModal] = useState(null); // "help" | "settings" | "meeting"
-  const status = usePolling(() => api.status(), [], 60000);
+  const status = usePolling(() => api.status(), [], 30000);
   const budget = status.data?.budget;
 
   return (
@@ -52,6 +52,11 @@ export default function App() {
               <span className="budget mono" title="Claude spend today vs daily budget">
                 ${budget.spent_today_usd.toFixed(2)} / ${budget.daily_budget_usd.toFixed(0)}
               </span>
+              {budget.buildout?.pending_jobs > 0 && (
+                <span className="budget mono buildout" title="One-time build-out pool: first deep dive on every ticker (separate from the daily budget)">
+                  build-out ${budget.buildout.spent_usd.toFixed(2)} / ${budget.buildout.budget_usd.toFixed(0)} · {budget.buildout.running_jobs} running, {budget.buildout.pending_jobs} left
+                </span>
+              )}
               <span className="last-check faint">prices {timeAgo(status.data.last_price_check)}</span>
             </>
           ) : null}

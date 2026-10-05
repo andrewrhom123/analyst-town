@@ -11,6 +11,8 @@ Budget rules (DAILY_BUDGET_USD, default $5, US/Eastern day):
 """
 
 import logging
+import threading
+from contextlib import contextmanager
 from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
 
@@ -80,9 +82,38 @@ def price_usage(model: str, usage) -> float:
     ) / 1_000_000
 
 
+# --- One-time build-out pool ---------------------------------------------------------------
+# Initial-coverage deep dives are paid from a separate one-time pool (BUILDOUT_BUDGET_USD) instead of
+# the daily budget. Their cost rows are tagged "buildout_<kind>" and left out of spent_today().
+BUILDOUT_PREFIX = "buildout_"
+_buildout_tickers: set[str] = set()
+_buildout_lock = threading.Lock()
+
+
+@contextmanager
+def buildout_scope(ticker: str):
+    """Charge Claude calls for this ticker to the build-out pool while inside the block."""
+    with _buildout_lock:
+        _buildout_tickers.add(ticker)
+    try:
+        yield
+    finally:
+        with _buildout_lock:
+            _buildout_tickers.discard(ticker)
+
+
+def buildout_spent() -> float:
+    """Total ever charged to the build-out pool (it is one-time, not daily)."""
+    with session_scope() as s:
+        return float(s.scalar(select(func.coalesce(func.sum(CostEntry.usd), 0.0)).where(CostEntry.kind.like(f"{BUILDOUT_PREFIX}%"))))
+
+
 def record_cost(kind: str, message, ticker: str | None = None) -> float:
     usage = message.usage
     usd = price_usage(message.model, usage)
+    with _buildout_lock:
+        if ticker in _buildout_tickers:
+            kind = BUILDOUT_PREFIX + kind
     with session_scope() as s:
         s.add(CostEntry(
             kind=kind, ticker=ticker, model=message.model,
@@ -101,7 +132,8 @@ def _day_start_utc() -> datetime:
 
 def spent_today() -> float:
     with session_scope() as s:
-        return float(s.scalar(select(func.coalesce(func.sum(CostEntry.usd), 0.0)).where(CostEntry.ts >= _day_start_utc())))
+        return float(s.scalar(select(func.coalesce(func.sum(CostEntry.usd), 0.0))
+                              .where(CostEntry.ts >= _day_start_utc(), CostEntry.kind.not_like(f"{BUILDOUT_PREFIX}%"))))
 
 
 def spend_breakdown_today() -> dict:
@@ -126,6 +158,7 @@ def budget_status() -> dict:
         "remaining_usd": round(config.DAILY_BUDGET_USD - spent, 4),
         "meeting_done_today": meeting_done_today(),
         "breakdown": spend_breakdown_today(),
+        "buildout": {"budget_usd": config.BUILDOUT_BUDGET_USD, "spent_usd": round(buildout_spent(), 4)},
     }
 
 

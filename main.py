@@ -160,7 +160,13 @@ def status(db: Session = Depends(get_db)):
         "database": "sqlite" if config.DATABASE_URL.startswith("sqlite") else "postgresql",
         "missing_config": config.missing_keys(),
         "models": {"deep_dive": config.DEEP_MODEL, "light": config.LIGHT_MODEL},
-        "budget": llm.budget_status(),
+        "budget": {**(budget := llm.budget_status()), "buildout": {
+            **budget["buildout"],
+            "pending_jobs": db.scalar(select(func.count()).select_from(Job).where(
+                Job.kind == "deep_dive", Job.trigger == "initial", Job.status.in_(["queued", "running", "deferred"]))),
+            "running_jobs": db.scalar(select(func.count()).select_from(Job).where(
+                Job.kind == "deep_dive", Job.trigger == "initial", Job.status == "running")),
+        }},
         "jobs": jobs,
         "scheduler": scheduler_status(scheduler),
         "coverage": {"analysts": db.scalar(select(func.count()).select_from(Analyst).where(Analyst.active.is_(True))),
