@@ -1,0 +1,314 @@
+# Coverage roster: 4 analysts, 27 tickers.
+#
+# This file seeds the database at startup (or POST /coverage/reload). Day to day, change coverage from the
+# chat instead - no code changes or redeploys:
+#   /add MSTR to Fintech     /remove MARA from Fintech
+#   /reassign AMZN from AI to Internet Platforms     /coverage Fintech
+#
+# Ticker fields:
+#   symbol        folder name under coverage/ and the API key (required)
+#   aliases       other names that resolve to this ticker (e.g. SQ -> XYZ)
+#   name          company or instrument name (required)
+#   type          public (SEC filings + prices + model) | foreign (prices, no SEC, no model)
+#                 | private (news only) | index (prices, no SEC)
+#   price_symbol  quote symbol if different from symbol (e.g. DXY -> UUP proxy)
+#   news_query / news_keywords / competitors / comps_buckets / focus_notes (optional)
+
+analysts:
+  - key: macro
+    name: Macro Strategist
+    type: macro
+    color: "#22d3ee"
+    focus_notes: >-
+      Daily market backdrop for the pod: rates, Fed decisions, inflation, USD strength, liquidity and risk appetite,
+      and what they mean for growth-stock multiples and for the other analysts' coverage.
+    tickers:
+      - symbol: SPY
+        name: S&P 500 (SPY)
+        type: index
+        description: US large-cap equity market proxy.
+        news_query: '"Federal Reserve" OR "interest rates" OR inflation OR "Treasury yields" OR "jobs report" OR recession'
+        news_keywords: [fed, federal reserve, inflation, rates, treasury, jobs, recession, gdp]
+      - symbol: QQQ
+        name: Nasdaq 100 (QQQ)
+        type: index
+        description: US growth / technology equity proxy.
+        news_query: '"Nasdaq" AND (tech OR growth OR AI OR earnings) AND (stocks OR market)'
+        news_keywords: [nasdaq, tech, growth, ai, megacap]
+      - symbol: TLT
+        name: 20+ Year Treasury Bond ETF (TLT)
+        type: index
+        description: Long-duration US Treasuries; the rates and term-premium barometer.
+        news_query: '"Treasury yields" OR "10-year yield" OR "bond market" OR "term premium" OR "Treasury auction"'
+        news_keywords: [treasury, yield, bond, duration, auction, fed]
+      - symbol: DXY
+        aliases: [UUP, USD]
+        name: US Dollar Index (DXY, via UUP)
+        type: index
+        price_symbol: UUP
+        description: US dollar strength vs major currencies. Priced through the UUP ETF as a tradable proxy.
+        news_query: '"US dollar" OR "dollar index" OR DXY OR "currency markets"'
+        news_keywords: [dollar, dxy, currency, fx, euro, yen]
+
+  - key: fintech
+    name: Fintech Analyst
+    type: sector
+    color: "#e879f9"
+    focus_notes: >-
+      Financial infrastructure: clearing/settlement, exchanges, retail trading, crypto, payments and bitcoin mining.
+      Sector growth and margins, user adoption, regulation (stablecoins, crypto market structure), and read-across
+      between names.
+    tickers:
+      - symbol: BLSH
+        name: Bullish
+        type: public
+        description: Bullish (NYSE BLSH), institutional digital-asset exchange, clearing/settlement, CoinDesk owner, acquiring Equiniti.
+        news_query: '"Bullish exchange" OR "Bullish Global" OR BLSH OR ("Bullish" AND (CoinDesk OR "crypto exchange" OR Equiniti))'
+        news_keywords: [bullish, blsh, coindesk, equiniti]
+        competitors: [Coinbase (COIN), Kraken, Robinhood (HOOD), CME Group, Gemini, Galaxy Digital]
+        focus_notes: >-
+          Revenue mix shift from transaction to subscriptions & services and whether the market re-rates it from a
+          crypto-exchange multiple toward infrastructure; volume x spread economics; Equiniti and tokenization;
+          reported revenue includes gross digital-asset sales, so use adjusted revenue.
+        comps_buckets:
+          Legacy Market Infrastructure: [ICE, NDAQ, CME]
+          Modern Trading Platforms: [HOOD, COIN, IBKR, ETOR, GLXY, BULL]
+          Registrar & Issuer Services: [BR, SSNC]
+          Stablecoin Issuer: [CRCL]
+          Tokenization Infrastructure: [FIGR]
+          Data & Index Providers: [MSCI, MCO, SPGI, FDS, MORN]
+      - symbol: NDAQ
+        name: Nasdaq Inc.
+        type: public
+        description: Nasdaq (NDAQ), exchange operator plus capital-access, financial-technology and index businesses.
+        news_query: '"Nasdaq Inc" OR NDAQ OR ("Nasdaq" AND (Verafin OR Adenza OR "index business"))'
+        news_keywords: [nasdaq, ndaq, verafin, adenza]
+        competitors: [ICE, CME Group, Cboe, LSEG, MSCI]
+        comps_buckets:
+          Market Infrastructure: [ICE, CME, CBOE]
+          Data & Index Providers: [MSCI, SPGI, FDS]
+      - symbol: HOOD
+        name: Robinhood
+        type: public
+        description: Robinhood (HOOD), retail brokerage, crypto, prediction markets.
+        news_query: Robinhood OR HOOD
+        news_keywords: [robinhood, hood, prediction markets]
+        competitors: [Charles Schwab, Interactive Brokers, Coinbase, Webull]
+        comps_buckets:
+          Modern Trading Platforms: [COIN, IBKR, SCHW, BLSH]
+      - symbol: COIN
+        name: Coinbase
+        type: public
+        description: Coinbase (COIN), crypto exchange, custody and USDC economics.
+        news_query: Coinbase OR COIN
+        news_keywords: [coinbase, usdc, base]
+        competitors: [Bullish (BLSH), Robinhood (HOOD), Kraken, Gemini]
+        comps_buckets:
+          Modern Trading Platforms: [HOOD, IBKR, BLSH, GLXY]
+      - symbol: PYPL
+        name: PayPal
+        type: public
+        description: PayPal (PYPL), payments - branded checkout, Braintree, Venmo.
+        news_query: PayPal OR PYPL OR Venmo
+        news_keywords: [paypal, pypl, venmo, braintree]
+        competitors: [Block (XYZ), Stripe, Adyen, Apple Pay]
+        comps_buckets:
+          Payments: [XYZ, ADYEY, FI, FOUR]
+      - symbol: XYZ
+        aliases: [SQ]
+        name: Block (Square)
+        type: public
+        description: Block (XYZ, formerly SQ), Square seller ecosystem, Cash App, Afterpay.
+        news_query: '"Block Inc" OR "Cash App" OR Square OR "Jack Dorsey"'
+        news_keywords: [block, cash app, square, afterpay]
+        competitors: [PayPal (PYPL), Toast, Chime, Robinhood]
+        comps_buckets:
+          Payments: [PYPL, ADYEY, FI, FOUR]
+      - symbol: ADYEN
+        aliases: [ADYEY]
+        name: Adyen
+        type: foreign
+        price_symbol: ADYEY
+        description: Adyen (Euronext ADYEN; US OTC ADR ADYEY), global payments infrastructure. Not an SEC filer.
+        news_query: Adyen
+        news_keywords: [adyen]
+        competitors: [Stripe, PayPal Braintree, Checkout.com, Worldpay]
+      - symbol: MARA
+        name: MARA Holdings (Marathon Digital)
+        type: public
+        description: MARA (Marathon Digital), bitcoin miner and energy/compute infrastructure.
+        news_query: '"MARA Holdings" OR "Marathon Digital" OR (MARA AND bitcoin)'
+        news_keywords: [mara, marathon, bitcoin, hashrate, miner]
+        competitors: [Riot Platforms, CleanSpark, Core Scientific, Cipher Mining]
+        comps_buckets:
+          Bitcoin Miners: [RIOT, CLSK, CORZ, CIFR]
+
+  - key: internet
+    name: Internet Platforms Analyst
+    type: sector
+    color: "#4ade80"
+    focus_notes: >-
+      Internet platforms and marketplaces: ad tech, travel, delivery and mobility. Take rates, gross bookings,
+      engagement and user adoption, unit economics, and platform competition (walled gardens, OTAs, aggregators).
+    tickers:
+      - symbol: NAVN
+        aliases: [NVAN]
+        name: Navan
+        type: public
+        description: Navan (NASDAQ NAVN), corporate travel and expense management platform.
+        news_query: '"Navan" AND (travel OR expense OR IPO OR stock OR NAVN)'
+        news_keywords: [navan, navn]
+        competitors: [SAP Concur, American Express GBT, Brex, Ramp, Perk (TravelPerk), Expensify (EXFY)]
+        focus_notes: >-
+          Gross booking volume, usage-based revenue growth, customer count and net revenue retention, path to GAAP
+          profitability, travel-cycle sensitivity, recent-IPO lockup dynamics. Fiscal year ends January 31.
+        comps_buckets:
+          Travel & Expense / Spend Management: [GBTG, EXFY, BILL]
+          Online Travel: [BKNG, EXPE]
+      - symbol: PUBM
+        name: PubMatic
+        type: public
+        description: PubMatic (NASDAQ PUBM), sell-side programmatic advertising platform.
+        news_query: PubMatic OR PUBM
+        news_keywords: [pubmatic, pubm]
+        competitors: [Magnite (MGNI), Google Ad Manager / AdX, Index Exchange, OpenX, Amazon Publisher Services, The Trade Desk OpenPath]
+        focus_notes: >-
+          Impressions processed x revenue per million impressions; CTV and retail media growth; DSP concentration;
+          take rate; Activate adoption; adjusted EBITDA margin; relative valuation vs The Trade Desk.
+        comps_buckets:
+          Supply & Demand-Side Platforms: [MGNI, TTD, CRTO, DSP]
+          Mobile & Performance: [APP, APPS, PERI]
+      - symbol: TTD
+        name: The Trade Desk
+        type: public
+        description: The Trade Desk (NASDAQ TTD), independent demand-side advertising platform.
+        news_query: '"The Trade Desk" OR "Trade Desk" OR TTD'
+        news_keywords: [trade desk, ttd, kokai, unified id]
+        competitors: [Amazon DSP, Google DV360, Meta, Microsoft Advertising, Roku / Netflix ad stacks, Criteo]
+        focus_notes: >-
+          Revenue growth vs the digital ad market, existing-client gross spend, retention, CTV and retail-media
+          share, Kokai/OpenPath adoption, Amazon DSP pressure, adjusted EBITDA margin, buybacks vs SBC.
+        comps_buckets:
+          Independent Ad Tech: [MGNI, PUBM, CRTO, DSP]
+          Mobile & Performance: [APP]
+          Walled Gardens: [GOOGL, META, AMZN]
+      - symbol: DASH
+        name: DoorDash
+        type: public
+        description: DoorDash (DASH), local-commerce logistics marketplace (restaurants, grocery, retail, Wolt).
+        news_query: DoorDash OR DASH OR Wolt
+        news_keywords: [doordash, dash, wolt, delivery]
+        competitors: [Uber Eats (UBER), Instacart (CART), Grubhub, Amazon]
+        comps_buckets:
+          Delivery & Mobility Marketplaces: [UBER, CART, LYFT]
+      - symbol: UBER
+        name: Uber
+        type: public
+        description: Uber (UBER), rideshare mobility plus delivery and freight; autonomous-vehicle partnerships.
+        news_query: Uber AND (rides OR delivery OR robotaxi OR earnings OR stock)
+        news_keywords: [uber, robotaxi, waymo, mobility]
+        competitors: [Lyft, DoorDash, Waymo, Tesla robotaxi]
+        comps_buckets:
+          Delivery & Mobility Marketplaces: [DASH, LYFT, CART]
+      - symbol: ABNB
+        aliases: [AIRBNB]
+        name: Airbnb
+        type: public
+        description: Airbnb (ABNB), travel and lodging marketplace.
+        news_query: Airbnb OR ABNB
+        news_keywords: [airbnb, abnb, nights booked]
+        competitors: [Booking Holdings (BKNG), Expedia / Vrbo (EXPE), hotels]
+        comps_buckets:
+          Online Travel: [BKNG, EXPE, TRIP]
+      - symbol: BKNG
+        aliases: [BOOKING]
+        name: Booking Holdings
+        type: public
+        description: Booking Holdings (BKNG), online travel agency (Booking.com, Priceline, Agoda, Kayak).
+        news_query: '"Booking Holdings" OR "Booking.com" OR BKNG'
+        news_keywords: [booking, bkng, priceline, agoda, room nights]
+        competitors: [Expedia (EXPE), Airbnb (ABNB), Google Travel, Trip.com]
+        comps_buckets:
+          Online Travel: [EXPE, ABNB, TRIP]
+
+  - key: ai
+    name: AI Analyst
+    type: sector
+    color: "#fbbf24"
+    focus_notes: >-
+      The AI stack: accelerators and CPUs, hyperscale cloud and AI infrastructure capex, and AI software. Capex
+      cycles, supply (foundry, HBM, power), pricing power, monetization of AI workloads, and competitive position.
+    tickers:
+      - symbol: NVDA
+        name: NVIDIA
+        type: public
+        description: NVIDIA (NVDA), AI accelerators, networking and software.
+        news_query: Nvidia OR NVDA
+        news_keywords: [nvidia, nvda, blackwell, rubin, gpu]
+        competitors: [AMD, Broadcom custom ASICs, Google TPU, Amazon Trainium, Intel]
+        comps_buckets:
+          AI Semiconductors: [AMD, AVGO, MRVL, INTC]
+      - symbol: AMD
+        name: AMD
+        type: public
+        description: Advanced Micro Devices (AMD), CPUs, GPUs/accelerators (Instinct), embedded.
+        news_query: '"Advanced Micro Devices" OR AMD AND (chip OR GPU OR Instinct OR EPYC)'
+        news_keywords: [amd, instinct, epyc, mi400]
+        competitors: [NVIDIA, Intel, Broadcom, Arm-based CPUs]
+        comps_buckets:
+          AI Semiconductors: [NVDA, AVGO, MRVL, INTC]
+      - symbol: INTC
+        name: Intel
+        type: public
+        description: Intel (INTC), CPUs, foundry (Intel Foundry), and turnaround.
+        news_query: Intel AND (chip OR foundry OR CPU OR earnings OR stock)
+        news_keywords: [intel, intc, foundry, 18a]
+        competitors: [AMD, NVIDIA, TSMC, Arm, Qualcomm]
+        comps_buckets:
+          Semiconductors: [AMD, NVDA, QCOM, TXN]
+      - symbol: MSFT
+        name: Microsoft
+        type: public
+        description: Microsoft (MSFT), Azure cloud and AI infrastructure, Copilot, productivity software.
+        news_query: Microsoft AND (Azure OR AI OR Copilot OR OpenAI OR earnings)
+        news_keywords: [microsoft, msft, azure, copilot, openai]
+        competitors: [Amazon AWS, Google Cloud, Oracle, Salesforce]
+        comps_buckets:
+          Hyperscalers: [AMZN, GOOGL, ORCL]
+      - symbol: AMZN
+        name: Amazon
+        type: public
+        description: Amazon (AMZN), AWS cloud and AI infrastructure, retail, advertising.
+        news_query: Amazon AND (AWS OR AI OR Trainium OR earnings OR advertising)
+        news_keywords: [amazon, amzn, aws, trainium, bedrock]
+        competitors: [Microsoft Azure, Google Cloud, Walmart, The Trade Desk (ads)]
+        comps_buckets:
+          Hyperscalers: [MSFT, GOOGL, ORCL]
+      - symbol: GOOGL
+        name: Alphabet
+        type: public
+        description: Alphabet (GOOGL), Google Search and ads, Google Cloud, TPUs, Gemini, YouTube.
+        news_query: Alphabet OR Google AND (AI OR Gemini OR Cloud OR search OR antitrust)
+        news_keywords: [google, alphabet, googl, gemini, tpu]
+        competitors: [Microsoft, Amazon, Meta, OpenAI]
+        comps_buckets:
+          Hyperscalers: [MSFT, AMZN, ORCL]
+          Digital Advertising: [META]
+      - symbol: PLTR
+        name: Palantir
+        type: public
+        description: Palantir (PLTR), data and AI platforms (Foundry, AIP) for government and commercial customers.
+        news_query: Palantir OR PLTR
+        news_keywords: [palantir, pltr, aip, foundry]
+        competitors: [Snowflake, Databricks, C3.ai, Microsoft]
+        comps_buckets:
+          AI & Data Software: [SNOW, DDOG, MDB, AI]
+      - symbol: AI
+        name: C3.ai
+        type: public
+        description: C3.ai (NYSE AI), enterprise AI application software.
+        news_query: '"C3.ai" OR "C3 AI"'
+        news_keywords: [c3.ai, c3 ai]
+        competitors: [Palantir, Salesforce, ServiceNow, Microsoft]
+        comps_buckets:
+          AI & Data Software: [PLTR, SNOW, DDOG, MDB]
