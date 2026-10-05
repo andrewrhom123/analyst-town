@@ -125,8 +125,9 @@ Settings (gear icon) and stored only in that browser.
 ### Voice
 
 Agents speak with ElevenLabs (four voice profiles, one per desk: macro, fintech, internet, AI, plus a meeting
-chair) and you can talk to them through OpenAI Whisper. Set `ELEVENLABS_API_KEY` and/or `OPENAI_API_KEY` on
-the backend; without a key that half of voice is simply hidden. Keys never reach the browser: the frontend
+chair) and you can talk to them through ElevenLabs Scribe speech-to-text (your tickers and company names are
+sent as keyterms so symbols transcribe correctly). One key covers both: set `ELEVENLABS_API_KEY` on the
+backend; without it, voice is simply hidden. Keys never reach the browser: the frontend
 calls `POST /voice/tts` (returns MP3) and `POST /voice/stt` (raw recording in, `{text}` out), both behind
 `API_ACCESS_KEY`. `GET /voice/status` reports what's enabled; `GET /meetings/latest/script` turns the last
 meeting into spoken turns for the boardroom.

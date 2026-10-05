@@ -142,12 +142,11 @@ def missing_keys() -> list[str]:
     return [name for name, value in required.items() if not value]
 
 
-# --- Voice (ElevenLabs TTS + OpenAI Whisper STT) ---------------------------------
-# Both optional: without a key the matching voice feature is hidden in the UI.
+# --- Voice (ElevenLabs: TTS + Scribe STT) ---------------------------------------
+# Optional: without the key, agent voices and voice input are hidden in the UI.
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_flash_v2_5")  # fast and half the credits of multilingual_v2
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-1")
+ELEVENLABS_STT_MODEL = os.getenv("ELEVENLABS_STT_MODEL", "scribe_v2")
 # Characters sent to ElevenLabs per US/Eastern day (cached replays are free and don't count).
 VOICE_DAILY_CHAR_LIMIT = _int("VOICE_DAILY_CHAR_LIMIT", 40000)
 VOICE_MAX_CHARS = _int("VOICE_MAX_CHARS", 1500)  # per request; longer text is cut at a sentence boundary
@@ -155,4 +154,4 @@ VOICE_CACHE_DIR = os.getenv("VOICE_CACHE_DIR", str(PROJECT_ROOT / "data_cache" /
 
 
 def voice_status() -> dict:
-    return {"tts": bool(ELEVENLABS_API_KEY), "stt": bool(OPENAI_API_KEY)}
+    return {"tts": bool(ELEVENLABS_API_KEY), "stt": bool(ELEVENLABS_API_KEY)}

@@ -34,7 +34,7 @@ export default function InstructionsTab({ onClose }) {
 
         <h3>Voice</h3>
         <ul className="list muted">
-          <li><b>🎙 Mic</b> (next to the chat box): tap and talk. It sends when you stop talking; your words are transcribed by Whisper.</li>
+          <li><b>🎙 Mic</b> (next to the chat box): tap and talk. It sends when you stop talking; your words are transcribed by ElevenLabs.</li>
           <li><b>▶</b> on any reply, or <b>Hear the pitch</b>: the analyst reads it aloud in their own voice (four distinct ElevenLabs voices, one per desk).</li>
           <li><b>🔊 Voice replies</b>: every answer is read aloud. <b>🎙 Hands-free</b>: talk, hear the answer, and the mic reopens so you can keep going.</li>
           <li><b>Boardroom</b> (town hall or the tower on the skyline): replay the latest meeting with each analyst speaking in turn, or ask the pod a question out loud.</li>

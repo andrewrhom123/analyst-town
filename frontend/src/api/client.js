@@ -97,7 +97,7 @@ export const api = {
   voiceStatus: () => request("/voice/status"),
   /** MP3 Blob of `text` spoken in the agent's voice (agent = analyst key or "chair"). */
   speak: async (text, agent) => (await rawPost("/voice/tts", { json: { text, agent } })).blob(),
-  /** Whisper transcription of a recorded Blob: { text }. */
+  /** Speech-to-text (ElevenLabs Scribe) of a recorded Blob: { text }. */
   transcribe: async (blob) => (await rawPost("/voice/stt", { body: blob, contentType: blob.type || "audio/webm" })).json(),
   coverage: (agentName) => request(`/coverage/${enc(agentName)}`),
   downloadUrl: (agentId, ticker, kind) => `${API_BASE}${t(agentId, ticker)}/download/${kind}`,

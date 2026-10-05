@@ -1,4 +1,4 @@
-"""Agent voices: ElevenLabs text-to-speech and OpenAI Whisper speech-to-text.
+"""Agent voices: ElevenLabs text-to-speech and ElevenLabs Scribe speech-to-text (one key: ELEVENLABS_API_KEY).
 
 Four voice profiles, one per analyst (macro, fintech, internet, AI), plus a chair voice that narrates meetings.
 Analysts added later from chat are mapped onto one of the four by a stable hash. Voice IDs are ElevenLabs
@@ -25,8 +25,8 @@ from utils import config
 logger = logging.getLogger(__name__)
 EASTERN = ZoneInfo("America/New_York")
 TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128"
-STT_URL = "https://api.openai.com/v1/audio/transcriptions"
-STT_MAX_BYTES = 25 * 1024 * 1024  # Whisper's upload limit
+STT_URL = "https://api.elevenlabs.io/v1/speech-to-text"
+STT_MAX_BYTES = 25 * 1024 * 1024  # a chat recording is far smaller; the API itself allows much more
 
 
 class VoiceError(Exception):
@@ -180,26 +180,47 @@ EXTENSIONS = {"webm": "webm", "ogg": "ogg", "mp4": "mp4", "m4a": "m4a", "x-m4a":
               "mpeg": "mp3", "mp3": "mp3", "wav": "wav", "x-wav": "wav", "flac": "flac"}
 
 
+# Keyterm prompting biases Scribe toward these words (tickers, company names). It adds 20% to the
+# transcription cost, and more than 100 keyterms imposes a 20-second minimum bill per request, so cap at 100.
+MAX_KEYTERMS = 100
+_KEYTERM_BANNED = str.maketrans("", "", "<>{}[]\\")
+
+
+def keyterms(vocabulary: list[str] | None) -> list[str]:
+    """Clean, de-duplicated keyterms within ElevenLabs' limits (<50 chars, <=5 words, no <>{}[] or backslash)."""
+    out, seen = [], set()
+    for term in vocabulary or []:
+        term = re.sub(r"\s*\([^)]*\)?", "", str(term))  # "S&P 500 (SPY)" -> "S&P 500"; the symbol is its own keyterm
+        term = " ".join(term.translate(_KEYTERM_BANNED).split()[:5])[:49].strip()
+        if term and term.lower() not in seen:
+            seen.add(term.lower())
+            out.append(term)
+        if len(out) == MAX_KEYTERMS:
+            break
+    return out
+
+
 def transcribe(audio: bytes, content_type: str, vocabulary: list[str] | None = None) -> str:
-    """Whisper transcription. `vocabulary` (tickers, company names) is passed as a prompt so symbols spell right."""
-    if not config.OPENAI_API_KEY:
-        raise VoiceNotConfigured("Voice input is off: set OPENAI_API_KEY on the backend")
+    """ElevenLabs Scribe transcription. `vocabulary` (tickers, company names) is sent as keyterms so symbols spell right."""
+    if not config.ELEVENLABS_API_KEY:
+        raise VoiceNotConfigured("Voice input is off: set ELEVENLABS_API_KEY on the backend")
     if not audio:
         raise VoiceError("No audio received")
     if len(audio) > STT_MAX_BYTES:
         raise VoiceError("Recording is too long (25 MB max)")
     subtype = (content_type or "audio/webm").split(";")[0].split("/")[-1].lower()
     ext = EXTENSIONS.get(subtype, "webm")
-    data = {"model": config.WHISPER_MODEL, "response_format": "json", "language": "en"}
-    if vocabulary:
-        data["prompt"] = "Equity research discussion. Tickers and companies: " + ", ".join(vocabulary)[:800]
+    # a list value makes requests send one "keyterms" form part per term
+    data = {"model_id": config.ELEVENLABS_STT_MODEL, "language_code": "en", "tag_audio_events": "false"}
+    if terms := keyterms(vocabulary):
+        data["keyterms"] = terms
     try:
-        res = requests.post(STT_URL, headers={"Authorization": f"Bearer {config.OPENAI_API_KEY}"},
+        res = requests.post(STT_URL, headers={"xi-api-key": config.ELEVENLABS_API_KEY},
                             files={"file": (f"speech.{ext}", audio, content_type or "audio/webm")}, data=data, timeout=60)
     except requests.RequestException as exc:
-        raise VoiceError(f"OpenAI unreachable: {exc}") from exc
+        raise VoiceError(f"ElevenLabs unreachable: {exc}") from exc
     if res.status_code != 200:
-        raise VoiceError(f"Whisper error {res.status_code}: {_error_text(res)}")
+        raise VoiceError(f"ElevenLabs speech-to-text error {res.status_code}: {_error_text(res)}")
     return (res.json().get("text") or "").strip()
 
 

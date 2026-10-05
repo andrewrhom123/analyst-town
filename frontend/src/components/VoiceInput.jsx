@@ -12,8 +12,8 @@ const pickMime = () => (typeof MediaRecorder === "undefined" ? null : MIME_TYPES
 
 /**
  * Mic button: tap to talk, tap again (or just stop talking) to send. The recording is transcribed by
- * Whisper on the backend and handed to onTranscript(text). Parents can start it with ref.current.start()
- * (hands-free conversation). onCancel fires when a recording ends without sending (no speech, or stopped). Hidden when the backend has no STT key or the browser can't record.
+ * ElevenLabs Scribe on the backend and handed to onTranscript(text). Parents can start it with ref.current.start()
+ * (hands-free conversation). onCancel fires when a recording ends without sending (no speech, or stopped). Hidden when voice is off on the backend (no ELEVENLABS_API_KEY) or the browser can't record.
  */
 export default function VoiceInput({ onTranscript, onError, onCancel, onStateChange, disabled = false, ref }) {
   const { stt } = useVoiceStatus();

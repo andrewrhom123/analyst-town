@@ -434,7 +434,7 @@ def voice_tts(body: SpeakIn):
 
 @app.post("/voice/stt", dependencies=[Depends(require_key)])
 async def voice_stt(request: Request):
-    """Transcribe a recording (raw request body, e.g. audio/webm from MediaRecorder) with Whisper."""
+    """Transcribe a recording (raw request body, e.g. audio/webm from MediaRecorder) with ElevenLabs Scribe (tickers sent as keyterms)."""
     audio = await request.body()
     vocabulary = [x for a in list_coverage() for t in a["tickers"] for x in (t["symbol"], t["name"])]
     text_out = _voice_call(voice.transcribe, audio, request.headers.get("content-type", "audio/webm"), vocabulary)
