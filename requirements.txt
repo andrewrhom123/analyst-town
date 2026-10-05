@@ -8,6 +8,7 @@ apscheduler>=3.10,<4
 requests>=2.31
 python-dotenv>=1.0
 psycopg2-binary>=2.9.10
+psycopg[binary]>=3.2
 tzdata>=2024.1
 openpyxl>=3.1
 pyyaml>=6.0
