@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { changeClass, featuredTicker, fmtPct, fmtPrice, timeAgo } from "../format.js";
 import { LAPTOP_QUERY, useMediaQuery } from "../hooks.js";
 import ConvictionMeter from "./ConvictionMeter.jsx";
+import { NewsFeed, ThemesBoard } from "./Dashboard.jsx";
 
 // three.js is only downloaded on laptop-size screens.
 const TownScene = lazy(() => import("../3d/TownScene.jsx"));
@@ -105,22 +106,51 @@ function Carousel({ agents, onEnterAgent, onOpenHall }) {
   );
 }
 
-/** 3D town on laptops (>= 1200px), swipeable card carousel on phones and tablets. */
-export default function TownView({ agents, onEnterAgent, onOpenHall }) {
-  const laptop = useMediaQuery(LAPTOP_QUERY);
-  if (!laptop) return <Carousel agents={agents} onEnterAgent={onEnterAgent} onOpenHall={onOpenHall} />;
+function TownStats({ agents }) {
+  const working = agents.filter((a) => a.status === "working").length;
+  const tickers = agents.flatMap((a) => a.tickers);
+  const up = tickers.filter((t) => t.change_pct != null && t.change_pct >= 0).length;
+  const priced = tickers.filter((t) => t.change_pct != null).length;
   return (
-    <div className="town">
-      <Suspense fallback={<div className="town-loading">Building the town…</div>}>
-        <TownScene agents={agents} onEnterAgent={onEnterAgent} onOpenHall={onOpenHall} />
-      </Suspense>
-      <div className="town-hud glass">
-        <h1>Analyst Town</h1>
-        <p>
-          {agents.reduce((n, a) => n + a.ticker_count, 0)} tickers · {agents.length} agents. Click a house to enter its office;
-          the town hall runs meetings. Brighter windows = fresher thinking.
-        </p>
+    <div className="town-stats">
+      <div><b>{agents.length}</b><span>agents</span></div>
+      <div><b>{tickers.length}</b><span>tickers</span></div>
+      <div><b className={working ? "up" : ""}>{working}</b><span>working now</span></div>
+      <div><b>{priced ? `${up}/${priced}` : "–"}</b><span>green today</span></div>
+    </div>
+  );
+}
+
+/** 3D town + dashboard sidebar on laptops (>= 1200px); card carousel + dashboard below on phones and tablets. */
+export default function TownView({ agents, onEnterAgent, onOpenHall, onTicker }) {
+  const laptop = useMediaQuery(LAPTOP_QUERY);
+  if (!laptop) {
+    return (
+      <>
+        <Carousel agents={agents} onEnterAgent={onEnterAgent} onOpenHall={onOpenHall} />
+        <div className="dash-mobile">
+          <ThemesBoard onTicker={onTicker} />
+          <NewsFeed onTicker={onTicker} limit={15} />
+        </div>
+      </>
+    );
+  }
+  return (
+    <div className="home">
+      <div className="town">
+        <Suspense fallback={<div className="town-loading">Building the town…</div>}>
+          <TownScene agents={agents} onEnterAgent={onEnterAgent} onOpenHall={onOpenHall} />
+        </Suspense>
+        <div className="town-hud glass">
+          <h1>Analyst Town</h1>
+          <p>Click a house to step into an agent's office; the town hall runs meetings. Brighter screens = fresher thinking.</p>
+          <TownStats agents={agents} />
+        </div>
       </div>
+      <aside className="dash-side" aria-label="Market dashboard">
+        <ThemesBoard onTicker={onTicker} />
+        <NewsFeed onTicker={onTicker} />
+      </aside>
     </div>
   );
 }

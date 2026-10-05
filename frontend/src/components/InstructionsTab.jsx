@@ -38,7 +38,7 @@ export default function InstructionsTab({ onClose }) {
             <tbody>
               {COMMANDS.map(([cmd, what]) => (
                 <tr key={cmd}>
-                  <td className="mono" style={{ color: "var(--cyan)" }}>{cmd}</td>
+                  <td className="mono" style={{ color: "var(--cyan-ink)" }}>{cmd}</td>
                   <td style={{ textAlign: "left", whiteSpace: "normal" }}>{what}</td>
                 </tr>
               ))}

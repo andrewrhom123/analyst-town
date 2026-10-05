@@ -4,7 +4,7 @@ import { api } from "../api/client.js";
 import { fmtPrice } from "../format.js";
 
 // One series (no legend box needed); level lines are status-like and always carry a text label + dash style.
-const COLORS = { price: "#22d3ee", entry: "#fbbf24", target: "#4ade80", stop: "#f87171", grid: "rgba(148,197,255,0.06)", text: "#a9b6cc" };
+const COLORS = { price: "#0891b2", entry: "#d97706", target: "#059669", stop: "#dc2626", grid: "rgba(16,24,40,0.06)", text: "#6b7280" };
 
 function PriceChart({ series, levels, height }) {
   const box = useRef();
@@ -18,7 +18,7 @@ function PriceChart({ series, levels, height }) {
       grid: { vertLines: { color: COLORS.grid }, horzLines: { color: COLORS.grid } },
       rightPriceScale: { borderVisible: false },
       timeScale: { borderVisible: false, fixLeftEdge: true, fixRightEdge: true },
-      crosshair: { mode: CrosshairMode.Magnet, vertLine: { color: "rgba(230,237,247,0.35)" }, horzLine: { color: "rgba(230,237,247,0.35)" } },
+      crosshair: { mode: CrosshairMode.Magnet, vertLine: { color: "rgba(26,26,26,0.25)" }, horzLine: { color: "rgba(26,26,26,0.25)" } },
       handleScale: { pinch: true, mouseWheel: true, axisPressedMouseMove: true },
       handleScroll: { horzTouchDrag: true, vertTouchDrag: false },
     });
@@ -65,7 +65,7 @@ function PriceChart({ series, levels, height }) {
   );
 }
 
-export default function ChartWidget({ agentId, ticker }) {
+export default function ChartWidget({ agentId, ticker, onData }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [expanded, setExpanded] = useState(false);
@@ -75,8 +75,9 @@ export default function ChartWidget({ agentId, ticker }) {
     let live = true;
     setData(null);
     setError(null);
-    api.chart(agentId, ticker).then((d) => live && setData(d)).catch((e) => live && setError(e.message));
+    api.chart(agentId, ticker).then((d) => { if (live) { setData(d); onData?.(d); } }).catch((e) => live && setError(e.message));
     return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId, ticker]);
 
   if (error) return <p className="down">{error}</p>;

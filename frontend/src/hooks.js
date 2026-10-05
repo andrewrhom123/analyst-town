@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { api } from "./api/client.js";
 
 /** True while the media query matches (e.g. laptop layout at >= 1200px). */
 export function useMediaQuery(query) {
@@ -82,4 +83,32 @@ export function useSwipe(onLeft, onRight, threshold = 60) {
       if (Math.abs(dx) > threshold && Math.abs(dx) > Math.abs(dy) * 1.5) (dx < 0 ? onLeft : onRight)?.();
     },
   };
+}
+
+/* Dashboard feed (news, themes, earnings): one shared fetch for every panel, refreshed every 5 minutes. */
+const DASH_TTL = 5 * 60 * 1000;
+let dash = { data: null, error: null, loading: false, fetchedAt: 0 };
+const dashListeners = new Set();
+const setDash = (next) => { dash = { ...dash, ...next }; dashListeners.forEach((fn) => fn()); };
+
+function loadDashboard() {
+  if (dash.loading || Date.now() - dash.fetchedAt < DASH_TTL) return;
+  setDash({ loading: true });
+  api.dashboard()
+    .then((data) => setDash({ data, error: null, loading: false, fetchedAt: Date.now() }))
+    // keep the last good copy; retry on the next subscriber or tick after a short backoff
+    .catch((error) => setDash({ error, loading: false, fetchedAt: Date.now() - DASH_TTL + 30000 }));
+}
+
+export function useDashboard() {
+  const state = useSyncExternalStore(
+    (fn) => { dashListeners.add(fn); return () => dashListeners.delete(fn); },
+    () => dash,
+  );
+  useEffect(() => {
+    loadDashboard();
+    const id = setInterval(() => document.visibilityState === "visible" && loadDashboard(), 60000);
+    return () => clearInterval(id);
+  }, []);
+  return state;
 }

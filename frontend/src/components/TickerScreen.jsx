@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
-import { fmtMoneyMm, fmtPct, fmtPrice } from "../format.js";
+import { changeClass, fmtMoneyMm, fmtPct, fmtPrice } from "../format.js";
 import ChartWidget from "./ChartWidget.jsx";
+import { EarningsCard, TickerNews, TickerThemes } from "./Dashboard.jsx";
 import DownloadButtons from "./DownloadButtons.jsx";
 import ElevatorPitch, { ThesisDetails } from "./ElevatorPitch.jsx";
 import Markdown from "./Markdown.jsx";
@@ -79,11 +80,39 @@ function ModelView({ agentId, ticker }) {
   );
 }
 
+/** Recent performance tiles: today, ~1 week, ~1 month (from the 30-day series), with a sparkline. */
+function PerformanceStrip({ today, series }) {
+  const closes = (series || []).map((d) => d.close).filter((v) => v != null);
+  const last = closes[closes.length - 1];
+  const back = (n) => (closes.length > n ? ((last - closes[closes.length - 1 - n]) / closes[closes.length - 1 - n]) * 100 : null);
+  const tiles = [["Today", today], ["5 days", back(5)], ["30 days", closes.length > 1 ? ((last - closes[0]) / closes[0]) * 100 : null]];
+  let spark = null;
+  if (closes.length > 1) {
+    const lo = Math.min(...closes), hi = Math.max(...closes), span = hi - lo || 1;
+    const pts = closes.map((v, i) => `${(i / (closes.length - 1)) * 120},${34 - ((v - lo) / span) * 30}`).join(" ");
+    const up = last >= closes[0];
+    spark = (
+      <svg className="spark" viewBox="0 0 120 36" preserveAspectRatio="none" role="img" aria-label={`30-day trend ${up ? "up" : "down"}`}>
+        <polyline points={pts} fill="none" stroke={up ? "var(--up)" : "var(--down)"} strokeWidth="2" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  return (
+    <div className="perf-strip">
+      {tiles.map(([k, v]) => (
+        <div className="perf-tile" key={k}><div className="k">{k}</div><div className={`v mono ${changeClass(v)}`}>{v == null ? "n/a" : fmtPct(v, 1)}</div></div>
+      ))}
+      {spark && <div className="perf-tile spark-tile"><div className="k">Trend</div>{spark}</div>}
+    </div>
+  );
+}
+
 const VIEWS = ["Pitch", "Memo", "Model", "Chart"];
 
 /** Everything about one ticker: pitch/conviction, memo, model, chart, downloads. */
 export default function TickerScreen({ agentId, ticker, compact = false }) {
   const [view, setView] = useState("Pitch");
+  const [series, setSeries] = useState(null);
   const { data: b, error } = useLoad(() => api.briefing(agentId, ticker), [agentId, ticker]);
 
   return (
@@ -98,10 +127,14 @@ export default function TickerScreen({ agentId, ticker, compact = false }) {
             <ElevatorPitch b={b} />
             {b.price?.price != null && (
               <section className="section glass">
-                <h3>Price chart</h3>
-                <ChartWidget agentId={agentId} ticker={ticker} />
+                <h3>Price performance</h3>
+                <PerformanceStrip today={b.price.change_pct} series={series} />
+                <ChartWidget agentId={agentId} ticker={ticker} onData={(d) => setSeries(d.series)} />
               </section>
             )}
+            {b.type === "public" && <EarningsCard ticker={ticker} />}
+            <TickerNews ticker={ticker} />
+            <TickerThemes ticker={ticker} />
             <ThesisDetails b={b} />
             {b.headline && (
               <section className="section glass">

@@ -5,6 +5,7 @@ import App from "./App.jsx";
 import "./styles/modern-theme.css";
 import "./styles/town.css";
 import "./styles/office.css";
+import "./styles/dashboard.css";
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>

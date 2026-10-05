@@ -19,5 +19,9 @@ export default function Home({ onOpenMeeting }) {
       </div>
     );
   }
-  return <TownView agents={agents} onEnterAgent={(a) => navigate(`/agent/${a.id}`)} onOpenHall={onOpenMeeting} />;
+  const openTicker = (symbol) => {
+    const owner = agents.find((a) => a.tickers.some((t) => t.symbol === symbol));
+    if (owner) navigate(`/agent/${owner.id}?t=${encodeURIComponent(symbol)}`);
+  };
+  return <TownView agents={agents} onEnterAgent={(a) => navigate(`/agent/${a.id}`)} onOpenHall={onOpenMeeting} onTicker={openTicker} />;
 }

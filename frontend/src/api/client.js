@@ -61,6 +61,7 @@ const t = (agentId, ticker) => `/agents/${enc(agentId)}/ticker/${enc(ticker)}`;
 export const api = {
   status: () => request("/status"),
   agents: () => request("/agents"),
+  dashboard: () => request("/dashboard"),
   agentTickers: (agentId) => request(`/agents/${enc(agentId)}/tickers`),
   briefing: (agentId, ticker) => request(`${t(agentId, ticker)}/briefing`),
   memo: (agentId, ticker) => request(`${t(agentId, ticker)}/memo`),

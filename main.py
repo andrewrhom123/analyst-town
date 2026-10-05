@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from agents import llm
 from agents.base_analyst import build_track_record
 from agents.briefing import HELP, ask, briefing, parse_command
+from agents.dashboard import dashboard
 from agents.coverage_files import FILENAMES, list_files, price_snapshot, read_file
 from agents.meeting import latest_minutes, run_meeting
 from agents.registry import CoverageError, add_analyst, analyst_info, get_context, list_coverage, reassign_ticker, update_ticker
@@ -207,6 +208,12 @@ def _agent_summary(a: dict, db: Session) -> dict:
 def agents(db: Session = Depends(get_db)):
     """All agents with status and their tickers' live price and current call (what the town renders)."""
     return [_agent_summary(a, db) for a in list_coverage()]
+
+
+@app.get("/dashboard")
+def get_dashboard():
+    """News feed, cross-ticker themes and earnings dates for the town page (cached data only, no API calls)."""
+    return dashboard()
 
 
 def _agent_or_404(agent_id: str) -> dict:
