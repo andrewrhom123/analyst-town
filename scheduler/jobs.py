@@ -4,11 +4,12 @@
   Mon-Fri 8:00 and 17:00            filing_check    new 10-Q/10-K/earnings 8-K -> deep dive             $0
   daily 7:15                        news_refresh    NewsAPI headlines -> latest_events.md                $0
   Mon-Fri 16:30                     daily meeting   analysts challenge and revise theses               ~$1
-  every 5 min                       process_queue   runs ONE queued Claude job (thesis update / deep dive)
+  every 1 min                       process_queue   starts a worker per idle agent; all agents research in parallel
   daily 0:05                        daily_reset     budget-deferred jobs go back in the queue
 
-Deep dives are spaced >= DEEP_DIVE_MIN_GAP_MINUTES apart, so they spread through the day instead of
-running all at once. Every Claude job checks the daily budget first and is deferred if it doesn't fit.
+Initial research phase: every agent works its own queue at the same time (one job per agent at a time,
+so at most one concurrent job per agent). Each job reserves its estimated cost against the daily budget
+before starting, so parallel jobs can't overshoot it; a job that doesn't fit is deferred.
 
 Run standalone as a worker:  python -m scheduler.jobs
 """
@@ -40,7 +41,10 @@ from utils import config
 
 logger = logging.getLogger(__name__)
 EASTERN = ZoneInfo("America/New_York")
-_queue_lock = threading.Lock()
+_budget_lock = threading.Lock()
+_reserved: dict[int, float] = {}  # job id -> estimated cost of jobs currently running
+_busy_agents: set[int] = set()  # analyst ids with a worker thread running
+_busy_lock = threading.Lock()
 
 
 def _aware(dt: datetime | None) -> datetime | None:
@@ -74,19 +78,32 @@ def _last_deep_dive_start() -> datetime | None:
         return _aware(job.started_at) if job else None
 
 
-def _next_job() -> Job | None:
-    """Thesis updates first (cheap, time-sensitive); deep dives only after the spacing gap (manual ones skip it)."""
+def _next_job(analyst_id: int) -> Job | None:
+    """This agent's next job: thesis updates first (cheap, time-sensitive), then deep dives, oldest first."""
     with session_scope() as s:
-        job = s.scalar(select(Job).where(Job.status == "queued", Job.kind == "thesis_update").order_by(Job.created_at).limit(1))
-        if job:
-            return job
-        job = s.scalar(select(Job).where(Job.status == "queued", Job.kind == "deep_dive").order_by(Job.created_at).limit(1))
-        if job is None:
-            return None
-        last = _last_deep_dive_start()
-        if job.trigger != "manual" and last and datetime.now(timezone.utc) - last < timedelta(minutes=config.DEEP_DIVE_MIN_GAP_MINUTES):
-            return None
-        return job
+        base = select(Job).join(Ticker, Job.ticker_id == Ticker.id).where(Job.status == "queued", Ticker.analyst_id == analyst_id)
+        return (s.scalar(base.where(Job.kind == "thesis_update").order_by(Job.created_at).limit(1))
+                or s.scalar(base.where(Job.kind == "deep_dive").order_by(Job.created_at).limit(1)))
+
+
+def _agents_with_queued_jobs() -> list[int]:
+    with session_scope() as s:
+        return list(s.scalars(select(Ticker.analyst_id).join(Job, Job.ticker_id == Ticker.id)
+                              .where(Job.status == "queued").distinct()))
+
+
+def _reserve(job_id: int, kind: str, estimate: float) -> tuple[bool, str]:
+    """Atomically check the budget, counting what already-running jobs are expected to spend."""
+    with _budget_lock:
+        ok, why = llm.can_spend(kind, estimate + sum(_reserved.values()))
+        if ok:
+            _reserved[job_id] = estimate
+        return ok, why
+
+
+def _release(job_id: int) -> None:
+    with _budget_lock:
+        _reserved.pop(job_id, None)
 
 
 def _claim(job_id: int) -> bool:
@@ -110,12 +127,12 @@ def run_job(job_id: int) -> dict:
         symbol = s.get(Ticker, job.ticker_id).symbol
     estimate = config.DEEP_DIVE_ESTIMATE_USD if kind == "deep_dive" else config.THESIS_UPDATE_ESTIMATE_USD
     # Your own requests (manual) may use the whole budget; autonomous work keeps the meeting/ask reserves.
-    ok, why = llm.can_spend("ask" if trigger == "manual" else kind, estimate)
+    ok, why = _reserve(job_id, "ask" if trigger == "manual" else kind, estimate)
     if not ok:
         _finish(job_id, "deferred", why)
         logger.info("Deferred %s for %s: %s", kind, symbol, why)
         return {"job_id": job_id, "status": "deferred", "error": why}
-    spent_before = llm.spent_today()
+    spent_before = llm.spent_today()  # day-wide total; with parallel agents a job's cost includes its neighbours'
     try:
         if kind == "deep_dive":
             result = run_deep_dive(symbol, trigger=f"{trigger}: {reason}")
@@ -131,22 +148,39 @@ def run_job(job_id: int) -> dict:
         logger.exception("Job %s (%s %s) failed", job_id, kind, symbol)
         _finish(job_id, "failed", f"{type(exc).__name__}: {exc}", cost=llm.spent_today() - spent_before)
         return {"job_id": job_id, "status": "failed", "error": str(exc)}
-
-
-def process_queue(max_jobs: int = 1) -> list[dict]:
-    """Run up to max_jobs queued jobs, one at a time (never all agents at once)."""
-    results = []
-    if not _queue_lock.acquire(blocking=False):
-        return results
-    try:
-        for _ in range(max_jobs):
-            job = _next_job()
-            if job is None or not _claim(job.id):
-                break
-            results.append(run_job(job.id))
     finally:
-        _queue_lock.release()
-    return results
+        _release(job_id)
+
+
+def _agent_worker(analyst_id: int) -> None:
+    """Work through one agent's queue until it is empty or the budget defers a job."""
+    try:
+        while (job := _next_job(analyst_id)) is not None:
+            if not _claim(job.id):
+                continue  # another worker took it
+            if run_job(job.id)["status"] == "deferred":
+                break  # out of budget for today; daily_reset re-queues it
+    except Exception:
+        logger.exception("Agent worker %s crashed", analyst_id)
+    finally:
+        with _busy_lock:
+            _busy_agents.discard(analyst_id)
+
+
+def process_queue() -> list[int]:
+    """Start a worker thread for every agent that has queued work and isn't already busy, so all agents
+    research at the same time. Returns the analyst ids started. Non-blocking."""
+    started = []
+    for analyst_id in _agents_with_queued_jobs():
+        with _busy_lock:
+            if analyst_id in _busy_agents:
+                continue
+            _busy_agents.add(analyst_id)
+        threading.Thread(target=_agent_worker, args=(analyst_id,), name=f"agent-{analyst_id}", daemon=True).start()
+        started.append(analyst_id)
+    if started:
+        logger.info("Started agent workers: %s", started)
+    return started
 
 
 # --- Monitors (no Claude) ---------------------------------------------------------------------
@@ -301,7 +335,7 @@ def create_scheduler() -> BackgroundScheduler:
         ("filing_check", filing_check, CronTrigger(day_of_week=weekdays, hour="8,17", minute=0, timezone=EASTERN)),
         ("news_refresh", news_refresh, CronTrigger(hour=7, minute=15, timezone=EASTERN)),
         ("daily_meeting", scheduled_meeting, CronTrigger(day_of_week=weekdays, hour=config.MEETING_HOUR, minute=config.MEETING_MINUTE, timezone=EASTERN)),
-        ("process_queue", process_queue, IntervalTrigger(minutes=5)),
+        ("process_queue", process_queue, IntervalTrigger(minutes=1)),
         ("daily_reset", daily_reset, CronTrigger(hour=0, minute=5, timezone=EASTERN)),
     ]
     for job_id, fn, trigger in jobs:
