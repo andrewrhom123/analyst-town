@@ -137,7 +137,10 @@ meeting into spoken turns for the boardroom.
 - Header 🔈/🔊 toggles synthesized office ambience (keyboards, faster while an agent works).
 - Cost control: clips are cached on disk (`VOICE_CACHE_DIR`), so replays are free; new speech is capped at
   `VOICE_DAILY_CHAR_LIMIT` characters per day and `VOICE_MAX_CHARS` per clip (cut at a sentence end).
-- Swap a voice with `ELEVENLABS_VOICE_MACRO` / `_FINTECH` / `_INTERNET` / `_AI` / `_CHAIR` (any ElevenLabs voice ID).
+- Voices are checked against your account (`GET /v1/voices`, needs the key's Voices read permission): if a
+  preferred voice isn't in your account, an unused voice of the same gender stands in, and `GET /voice/status`
+  shows which voice each desk got. Pin one with `ELEVENLABS_VOICE_MACRO` / `_FINTECH` / `_INTERNET` / `_AI` /
+  `_CHAIR` (any voice ID in your account).
 
 Deploy to Vercel: import the repo with **Root Directory = `frontend`** (framework preset Vite), and set
 `REACT_APP_API_URL=https://<your-railway-app>.up.railway.app`. `vercel.json` handles client-side routes.

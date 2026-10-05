@@ -1,8 +1,10 @@
 """Agent voices: ElevenLabs text-to-speech and ElevenLabs Scribe speech-to-text (one key: ELEVENLABS_API_KEY).
 
 Four voice profiles, one per analyst (macro, fintech, internet, AI), plus a chair voice that narrates meetings.
-Analysts added later from chat are mapped onto one of the four by a stable hash. Voice IDs are ElevenLabs
-premade voices and can be swapped with ELEVENLABS_VOICE_<KEY> env vars.
+Analysts added later from chat are mapped onto one of the four by a stable hash. Each profile names a preferred
+ElevenLabs premade voice (override with ELEVENLABS_VOICE_<KEY>), but which premade voices an account has varies,
+so profiles are resolved against the account's own voice list (GET /v1/voices): a missing voice is replaced by
+an unused one of the same gender, keeping the five voices distinct.
 
 Cost control: synthesized audio is cached on disk by (voice, model, text), so replays are free, and fresh
 synthesis is capped at VOICE_DAILY_CHAR_LIMIT characters per US/Eastern day (VOICE_MAX_CHARS per request).
@@ -13,6 +15,7 @@ import logging
 import os
 import re
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +29,7 @@ logger = logging.getLogger(__name__)
 EASTERN = ZoneInfo("America/New_York")
 TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128"
 STT_URL = "https://api.elevenlabs.io/v1/speech-to-text"
+VOICES_URL = "https://api.elevenlabs.io/v1/voices"
 STT_MAX_BYTES = 25 * 1024 * 1024  # a chat recording is far smaller; the API itself allows much more
 
 
@@ -44,28 +48,33 @@ class VoiceLimitReached(VoiceError):
 @dataclass(frozen=True)
 class VoiceProfile:
     key: str
-    label: str
-    voice_id: str
+    style_note: str
+    preferred: str  # preferred voice name, used to pick a stand-in when the configured ID is missing
+    gender: str
+    voice_id: str  # configured ID; may not exist in this account (see resolve())
     stability: float
     style: float
 
     def public(self) -> dict:
-        return {"key": self.key, "label": self.label}
+        voice_id, name = resolve(self)
+        return {"key": self.key, "label": f"{name}: {self.style_note}", "voice_id": voice_id}
 
 
-def _profile(key: str, label: str, default_id: str, stability: float, style: float) -> VoiceProfile:
-    return VoiceProfile(key, label, os.getenv(f"ELEVENLABS_VOICE_{key.upper()}", default_id), stability, style)
+def _profile(key, style_note, preferred, gender, default_id, stability, style) -> VoiceProfile:
+    configured = os.getenv(f"ELEVENLABS_VOICE_{key.upper()}", default_id)
+    return VoiceProfile(key, style_note, preferred, gender, configured, stability, style)
 
 
 # Distinct delivery per desk: steady macro baritone, brisk fintech, upbeat internet, precise AI.
 PROFILES = {
-    "macro": _profile("macro", "George: measured, warm baritone", "JBFqnCBsd6RMkjVDRZzb", 0.6, 0.15),
-    "fintech": _profile("fintech", "Rachel: crisp and brisk", "21m00Tcm4TlvDq8ikWAM", 0.45, 0.3),
-    "internet": _profile("internet", "Charlie: casual and upbeat", "IKne3meq5aSn9XLyUdCD", 0.4, 0.45),
-    "ai": _profile("ai", "Matilda: precise and bright", "XrExE9yKIg1WjnnlVkGX", 0.55, 0.25),
+    "macro": _profile("macro", "measured, warm baritone", "George", "male", "JBFqnCBsd6RMkjVDRZzb", 0.6, 0.15),
+    "fintech": _profile("fintech", "crisp and brisk", "Rachel", "female", "21m00Tcm4TlvDq8ikWAM", 0.45, 0.3),
+    "internet": _profile("internet", "casual and upbeat", "Charlie", "male", "IKne3meq5aSn9XLyUdCD", 0.4, 0.45),
+    "ai": _profile("ai", "precise and bright", "Matilda", "female", "XrExE9yKIg1WjnnlVkGX", 0.55, 0.25),
 }
-CHAIR = _profile("chair", "Daniel: meeting chair", "onwK4e9ZLuTAKqWW03F8", 0.65, 0.1)
+CHAIR = _profile("chair", "meeting chair", "Daniel", "male", "onwK4e9ZLuTAKqWW03F8", 0.65, 0.1)
 PROFILE_ORDER = list(PROFILES)
+ALL_PROFILES = [*PROFILES.values(), CHAIR]
 
 
 def profile_for(agent_key: str | None) -> VoiceProfile:
@@ -77,6 +86,68 @@ def profile_for(agent_key: str | None) -> VoiceProfile:
         return PROFILES[key]
     digest = int(hashlib.sha1(key.encode()).hexdigest(), 16)
     return PROFILES[PROFILE_ORDER[digest % len(PROFILE_ORDER)]]
+
+
+# --- Resolving profiles against the account's voices ------------------------------------------
+
+RESOLVE_TTL = 3600  # re-check the account's voice list hourly (or right after a voice-not-found error)
+_resolve_lock = threading.Lock()
+_resolved: dict = {"at": 0.0, "map": {}, "listed": False}
+
+
+def _account_voices() -> list[dict] | None:
+    """The account's voices, or None if they can't be listed (network error, key without voices_read)."""
+    try:
+        res = requests.get(VOICES_URL, headers={"xi-api-key": config.ELEVENLABS_API_KEY}, timeout=15)
+    except requests.RequestException as exc:
+        logger.warning("Could not list ElevenLabs voices: %s", exc)
+        return None
+    if res.status_code != 200:
+        logger.warning("Could not list ElevenLabs voices (%s): %s", res.status_code, _error_text(res))
+        return None
+    return res.json().get("voices") or []
+
+
+def _pick(profile: VoiceProfile, voices: list[dict], used: set[str]) -> dict:
+    """Best stand-in: unused first, then the preferred name, then the same gender, then premade voices."""
+    def rank(v: dict):
+        labels = v.get("labels") or {}
+        return (v["voice_id"] in used,
+                not (v.get("name") or "").lower().startswith(profile.preferred.lower()),
+                (labels.get("gender") or "").lower() != profile.gender,
+                v.get("category") != "premade")
+    return min(voices, key=rank)
+
+
+def resolve_all(force: bool = False) -> dict[str, tuple[str, str]]:
+    """profile key -> (voice_id, voice name) usable with this account. Cached for RESOLVE_TTL."""
+    with _resolve_lock:
+        if not force and _resolved["map"] and time.time() - _resolved["at"] < RESOLVE_TTL:
+            return _resolved["map"]
+        voices = _account_voices() if config.ELEVENLABS_API_KEY else None
+        mapping: dict[str, tuple[str, str]] = {}
+        if not voices:  # can't check (or the account has no voices): use the configured IDs as they are
+            mapping = {p.key: (p.voice_id, p.preferred) for p in ALL_PROFILES}
+        else:
+            by_id = {v["voice_id"]: v for v in voices}
+            used: set[str] = set()
+            for p in ALL_PROFILES:
+                if p.voice_id in by_id:
+                    mapping[p.key] = (p.voice_id, by_id[p.voice_id].get("name") or p.preferred)
+                    used.add(p.voice_id)
+            for p in ALL_PROFILES:
+                if p.key not in mapping:
+                    v = _pick(p, voices, used)
+                    mapping[p.key] = (v["voice_id"], v.get("name") or p.preferred)
+                    used.add(v["voice_id"])
+                    logger.warning("ElevenLabs voice %s (%s) for '%s' is not in this account; using %s (%s)",
+                                   p.voice_id, p.preferred, p.key, v.get("name"), v["voice_id"])
+        _resolved.update(at=time.time(), map=mapping, listed=voices is not None)
+        return mapping
+
+
+def resolve(profile: VoiceProfile, force: bool = False) -> tuple[str, str]:
+    return resolve_all(force).get(profile.key, (profile.voice_id, profile.preferred))
 
 
 # --- Text preparation ----------------------------------------------------------------------
@@ -132,8 +203,8 @@ def usage_today() -> dict:
     return {"chars_today": used, "daily_char_limit": config.VOICE_DAILY_CHAR_LIMIT}
 
 
-def _cache_path(profile: VoiceProfile, text: str) -> Path:
-    digest = hashlib.sha256(f"{profile.voice_id}|{config.ELEVENLABS_MODEL}|{profile.stability}|{profile.style}|{text}".encode()).hexdigest()
+def _cache_path(profile: VoiceProfile, voice_id: str, text: str) -> Path:
+    digest = hashlib.sha256(f"{voice_id}|{config.ELEVENLABS_MODEL}|{profile.stability}|{profile.style}|{text}".encode()).hexdigest()
     return Path(config.VOICE_CACHE_DIR) / f"{digest}.mp3"
 
 
@@ -145,25 +216,31 @@ def synthesize(text: str, agent_key: str | None) -> tuple[bytes, dict]:
     if not spoken:
         raise VoiceError("Nothing to say")
     profile = profile_for(agent_key)
-    path = _cache_path(profile, spoken)
+    voice_id, _ = resolve(profile)
+    path = _cache_path(profile, voice_id, spoken)
     info = {"voice": profile.key, "chars": len(spoken), "cached": True}
     if path.exists():
         return path.read_bytes(), info
     _charge(len(spoken))
     try:
-        res = requests.post(
-            TTS_URL.format(voice_id=profile.voice_id),
-            headers={"xi-api-key": config.ELEVENLABS_API_KEY, "Accept": "audio/mpeg"},
-            json={"text": spoken, "model_id": config.ELEVENLABS_MODEL,
-                  "voice_settings": {"stability": profile.stability, "similarity_boost": 0.8,
-                                     "style": profile.style, "use_speaker_boost": True}},
-            timeout=60,
-        )
+        res = _tts_request(profile, voice_id, spoken)
+        if _voice_missing(res):
+            # the account's voices changed since we last looked: re-check once and retry with the stand-in
+            retry_id, _ = resolve(profile, force=True)
+            if retry_id != voice_id:
+                voice_id, path = retry_id, _cache_path(profile, retry_id, spoken)
+                res = _tts_request(profile, voice_id, spoken)
     except requests.RequestException as exc:
         _charge(-len(spoken))
         raise VoiceError(f"ElevenLabs unreachable: {exc}") from exc
     if res.status_code != 200:
         _charge(-len(spoken))
+        if _voice_missing(res):
+            why = ("no other voice was found to stand in. Add any voice under My Voices in ElevenLabs"
+                   if _resolved["listed"] else
+                   "its voice list couldn't be read to pick a stand-in: give the API key the Voices (read) permission")
+            raise VoiceError(f"The '{profile.key}' voice ({voice_id}) is not in your ElevenLabs account, and {why}, "
+                             f"or set ELEVENLABS_VOICE_{profile.key.upper()} to a voice ID you have.")
         raise VoiceError(f"ElevenLabs error {res.status_code}: {_error_text(res)}")
     audio = res.content
     try:
@@ -172,6 +249,21 @@ def synthesize(text: str, agent_key: str | None) -> tuple[bytes, dict]:
     except OSError as exc:
         logger.warning("Could not cache voice clip: %s", exc)
     return audio, {**info, "cached": False}
+
+
+def _tts_request(profile: VoiceProfile, voice_id: str, spoken: str) -> requests.Response:
+    return requests.post(
+        TTS_URL.format(voice_id=voice_id),
+        headers={"xi-api-key": config.ELEVENLABS_API_KEY, "Accept": "audio/mpeg"},
+        json={"text": spoken, "model_id": config.ELEVENLABS_MODEL,
+              "voice_settings": {"stability": profile.stability, "similarity_boost": 0.8,
+                                 "style": profile.style, "use_speaker_boost": True}},
+        timeout=60,
+    )
+
+
+def _voice_missing(res: requests.Response) -> bool:
+    return res.status_code == 404 and "voice" in _error_text(res).lower()
 
 
 # --- Speech to text --------------------------------------------------------------------------
