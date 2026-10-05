@@ -22,7 +22,7 @@ from agents.briefing import HELP, ask, briefing, parse_command
 from agents.dashboard import dashboard
 from alerts.sms import SmsNotConfigured, recent_alerts, send_sms
 from agents.coverage_files import FILENAMES, list_files, price_snapshot, read_file
-from agents.meeting import latest_minutes, run_meeting
+from agents.meeting import latest_minutes, meeting_in_progress, run_meeting
 from agents.registry import CoverageError, add_analyst, analyst_info, get_context, list_coverage, reassign_ticker, update_ticker
 from agents.thesis import current_thesis, thesis_history
 from agents import voice
@@ -386,6 +386,8 @@ def _meeting_task() -> None:
 
 @app.post("/meeting", status_code=202, dependencies=[Depends(require_key)])
 def post_meeting(background: BackgroundTasks):
+    if meeting_in_progress():
+        raise HTTPException(status_code=409, detail="A meeting is already in progress (they take 3-7 minutes)")
     ok, why = llm.can_spend("meeting", config.MEETING_ESTIMATE_USD)
     if not ok:
         raise HTTPException(status_code=429, detail=why)

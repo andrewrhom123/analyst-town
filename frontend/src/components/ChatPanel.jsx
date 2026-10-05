@@ -20,7 +20,7 @@ function describe(res) {
     case "reassign":
       return { role: "system", text: `Moved ${res.symbol} from ${res.from} to ${res.to}.` };
     case "meeting":
-      return { role: "system", text: "Meeting started. Agents are debating; open the town hall (🗣️) for the minutes in 1-3 minutes." };
+      return { role: "system", text: "Meeting started. Agents are debating; open the town hall (🗣️) for the minutes in 3-7 minutes." };
     case "deepdive":
     case "update":
       return { role: "system", text: res.status === "started" ? `${res.command === "deepdive" ? "Deep dive" : "Thesis update"} started for ${res.ticker}.` : `${res.ticker}: ${res.status}.` };

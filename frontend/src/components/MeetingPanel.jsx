@@ -59,7 +59,7 @@ export default function MeetingPanel({ onClose }) {
         <Link className="btn" to="/boardroom" onClick={onClose} style={{ marginLeft: 8 }}>Enter the boardroom</Link>
         {error && <p className="down" role="alert">{error}</p>}
         {meeting && meeting.status === "running" && (
-          <p className="muted" aria-live="polite"><span className="typing"><span /><span /><span /></span> Agents are debating. This takes 1-3 minutes.</p>
+          <p className="muted" aria-live="polite"><span className="typing"><span /><span /><span /></span> Agents are debating (started {timeAgo(meeting.started_at)}). A meeting takes 3-7 minutes.</p>
         )}
         {meeting?.status === "failed" && <p className="down">Last meeting failed {timeAgo(meeting.finished_at || meeting.started_at)}: {meeting.error}</p>}
         {meeting?.minutes_md ? (

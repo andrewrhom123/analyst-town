@@ -7,12 +7,13 @@ Round 2 - Responses: each analyst answers the challenges aimed at its tickers (a
 Round 3 - Minutes: a chair summarizes debates, changes and the cross-ticker dependency map; each ticker's
           meeting_notes.md gets its section.
 
-Analysts are called one at a time (never all at once). ~13 Sonnet calls for 6 analysts, about $1.
+Analysts are called one at a time (never all at once): 2N+1 Sonnet calls for N analysts, about $1 and
+3-7 minutes for the 4-analyst pod.
 """
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -28,6 +29,10 @@ from database.models import AgentLesson, Meeting
 from utils import config
 
 logger = logging.getLogger(__name__)
+
+# A meeting runs in the web process; if the server restarts mid-meeting (e.g. a redeploy), its row would stay
+# "running" forever and block new meetings. Anything still running after this long is marked failed.
+STALE_AFTER = timedelta(minutes=20)
 
 # Round 2 for a wide coverage list (Fintech has 8 tickers) plus thinking can outgrow parse_call's 16k default.
 MEETING_MAX_TOKENS = 32000
@@ -214,8 +219,28 @@ def _run(meeting_id: int) -> dict:
             "revised_theses": revised, "minutes_md": f"# Pod meeting #{meeting_id}, {stamp}\n\n{minutes.summary_md}"}
 
 
+def expire_stale_meetings(s) -> None:
+    """Mark meetings that have been 'running' longer than STALE_AFTER as failed (their process died)."""
+    now = datetime.now(timezone.utc)
+    for m in s.scalars(select(Meeting).where(Meeting.status == "running")):
+        started = m.started_at if m.started_at.tzinfo else m.started_at.replace(tzinfo=timezone.utc)  # SQLite drops tz
+        if now - started > STALE_AFTER:
+            m.status, m.finished_at = "failed", now
+            m.error = ("Interrupted: no result after 20 minutes, so the server probably restarted mid-meeting "
+                       "(e.g. a redeploy). Start a new one.")
+
+
+def meeting_in_progress() -> bool:
+    with session_scope() as s:
+        expire_stale_meetings(s)
+        s.flush()
+        return s.scalar(select(Meeting.id).where(Meeting.status == "running").limit(1)) is not None
+
+
 def latest_minutes() -> dict | None:
     with session_scope() as s:
+        expire_stale_meetings(s)
+        s.flush()
         m = s.scalar(select(Meeting).order_by(Meeting.started_at.desc()).limit(1))
         if m is None:
             return None
