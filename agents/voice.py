@@ -90,6 +90,25 @@ def profile_for(agent_key: str | None) -> VoiceProfile:
 
 # --- Resolving profiles against the account's voices ------------------------------------------
 
+# Standard English ElevenLabs voices (name, gender, id). When a voice is missing and the account's voice list
+# can't be read (key without Voices read permission), synthesis walks this pool until a voice works. A
+# voice-not-found response generates no audio, so the probing is free.
+FALLBACK_POOL = [
+    ("George", "male", "JBFqnCBsd6RMkjVDRZzb"), ("Sarah", "female", "EXAVITQu4vr4xnJW9oFQ"),
+    ("Charlie", "male", "IKne3meq5aSn9XLyUdCD"), ("Matilda", "female", "XrExE9yKIg1WjnnlVkGX"),
+    ("Brian", "male", "nPczCjzI2devNBz1zQrb"), ("Alice", "female", "Xb7hH8MSUJpSbSDYk0k2"),
+    ("Roger", "male", "CwhRBWXzGAHq8TQ4Fs17"), ("Laura", "female", "FGY2WhTYpPnrIDTdsKH5"),
+    ("Callum", "male", "N2lVS1w4EtoT3dr4eOWO"), ("Charlotte", "female", "XB0fDUnXU5powFXDhCwa"),
+    ("Liam", "male", "TX3LPaxmHKxFdv7VOQHJ"), ("Jessica", "female", "cgSgspJ2msm6clMCkdW9"),
+    ("Will", "male", "bIHbv24MWmeRgasZH58o"), ("Lily", "female", "pFZP5JQG7iQjIQuC4Bku"),
+    ("Eric", "male", "cjVigY5qzO86Huf0OWal"), ("Aria", "female", "9BWtsMINqrJLrRacOk9x"),
+    ("Chris", "male", "iP95p4xoKVk53GoZ742B"), ("Rachel", "female", "21m00Tcm4TlvDq8ikWAM"),
+    ("Bill", "male", "pqHfZKP75CyOlSgLPmqH"), ("Adam", "male", "pNInz6obpgDQGcFmaJgB"),
+    ("Daniel", "male", "onwK4e9ZLuTAKqWW03F8"), ("River", "neutral", "SAz9YHcvj6GT2YYXdXww"),
+]
+MAX_VOICE_PROBES = len(FALLBACK_POOL)
+_bad_ids: set[str] = set()  # voice IDs this account turned out not to have
+
 RESOLVE_TTL = 3600  # re-check the account's voice list hourly (or right after a voice-not-found error)
 _resolve_lock = threading.Lock()
 _resolved: dict = {"at": 0.0, "map": {}, "listed": False}
@@ -126,8 +145,10 @@ def resolve_all(force: bool = False) -> dict[str, tuple[str, str]]:
             return _resolved["map"]
         voices = _account_voices() if config.ELEVENLABS_API_KEY else None
         mapping: dict[str, tuple[str, str]] = {}
-        if not voices:  # can't check (or the account has no voices): use the configured IDs as they are
-            mapping = {p.key: (p.voice_id, p.preferred) for p in ALL_PROFILES}
+        if not voices:  # can't check: keep stand-ins found by probing, else the configured IDs
+            previous = _resolved["map"]
+            mapping = {p.key: previous[p.key] if p.key in previous and previous[p.key][0] not in _bad_ids
+                       else (p.voice_id, p.preferred) for p in ALL_PROFILES}
         else:
             by_id = {v["voice_id"]: v for v in voices}
             used: set[str] = set()
@@ -148,6 +169,23 @@ def resolve_all(force: bool = False) -> dict[str, tuple[str, str]]:
 
 def resolve(profile: VoiceProfile, force: bool = False) -> tuple[str, str]:
     return resolve_all(force).get(profile.key, (profile.voice_id, profile.preferred))
+
+
+def _next_fallback(profile: VoiceProfile, missing_id: str) -> str | None:
+    """Swap a missing voice for an untried English voice no other desk uses (same gender first)."""
+    resolve_all()
+    with _resolve_lock:
+        _bad_ids.add(missing_id)
+        mapping = dict(_resolved["map"])
+        taken = {vid for key, (vid, _) in mapping.items() if key != profile.key}
+        options = [c for c in FALLBACK_POOL if c[2] not in _bad_ids and c[2] not in taken]
+        if not options:
+            return None
+        name, _, vid = min(options, key=lambda c: c[1] != profile.gender)  # stable: pool order breaks ties
+        mapping[profile.key] = (vid, name)
+        _resolved["map"] = mapping
+        logger.warning("ElevenLabs voice %s for '%s' is not available; trying %s (%s)", missing_id, profile.key, name, vid)
+        return vid
 
 
 # --- Text preparation ----------------------------------------------------------------------
@@ -224,23 +262,25 @@ def synthesize(text: str, agent_key: str | None) -> tuple[bytes, dict]:
     _charge(len(spoken))
     try:
         res = _tts_request(profile, voice_id, spoken)
-        if _voice_missing(res):
-            # the account's voices changed since we last looked: re-check once and retry with the stand-in
-            retry_id, _ = resolve(profile, force=True)
-            if retry_id != voice_id:
-                voice_id, path = retry_id, _cache_path(profile, retry_id, spoken)
-                res = _tts_request(profile, voice_id, spoken)
+        for attempt in range(MAX_VOICE_PROBES):
+            if not _voice_missing(res):
+                break
+            # first re-read the account's voices (they may have changed); if that can't help, probe the pool
+            retry_id = resolve(profile, force=True)[0] if attempt == 0 else voice_id
+            if retry_id == voice_id:
+                retry_id = _next_fallback(profile, voice_id)
+                if retry_id is None:
+                    break
+            voice_id, path = retry_id, _cache_path(profile, retry_id, spoken)
+            res = _tts_request(profile, voice_id, spoken)
     except requests.RequestException as exc:
         _charge(-len(spoken))
         raise VoiceError(f"ElevenLabs unreachable: {exc}") from exc
     if res.status_code != 200:
         _charge(-len(spoken))
         if _voice_missing(res):
-            why = ("no other voice was found to stand in. Add any voice under My Voices in ElevenLabs"
-                   if _resolved["listed"] else
-                   "its voice list couldn't be read to pick a stand-in: give the API key the Voices (read) permission")
-            raise VoiceError(f"The '{profile.key}' voice ({voice_id}) is not in your ElevenLabs account, and {why}, "
-                             f"or set ELEVENLABS_VOICE_{profile.key.upper()} to a voice ID you have.")
+            raise VoiceError("None of the standard ElevenLabs voices are available to this API key. Add any voice "
+                             "under My Voices in ElevenLabs and try again.")
         raise VoiceError(f"ElevenLabs error {res.status_code}: {_error_text(res)}")
     audio = res.content
     try:
