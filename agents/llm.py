@@ -17,8 +17,7 @@ from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
 
 import anthropic
-from anthropic.types.beta import BetaMessage
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import func, select
 
 from database.db import session_scope
@@ -190,35 +189,36 @@ def require_budget(kind: str, estimate_usd: float) -> None:
 
 def parse_call(kind: str, output_format, system: str, messages: list, *, ticker: str | None = None,
                model: str | None = None, effort: str | None = None, max_tokens: int = 16000):
-    """One structured-output call with refusal fallback. Returns (parsed, message)."""
+    """One structured-output call with refusal fallback. Returns (parsed, message).
+
+    Streams, because the SDK refuses non-streaming requests whose max_tokens could take over 10 minutes.
+    The schema is sent as plain output_config and validated here after the stream ends: the SDK's own
+    parsing runs before stop_reason arrives, so a response cut off at max_tokens would raise an opaque
+    "EOF while parsing" error and skip the cost ledger.
+    """
     model = model or config.LIGHT_MODEL
-    raw = get_client().beta.messages.with_raw_response.parse(
+    adapter = TypeAdapter(output_format)
+    output_config = {"effort": effort or config.LIGHT_EFFORT,
+                     "format": {"type": "json_schema", "schema": anthropic.transform_schema(adapter.json_schema())}}
+    with get_client().beta.messages.stream(
         model=model,
         max_tokens=max_tokens,
         betas=[FALLBACK_BETA],
         fallbacks="default",
-        output_config={"effort": effort or config.LIGHT_EFFORT},
+        output_config=output_config,
         system=system,
         messages=messages,
-        output_format=output_format,
-    )
-    try:
-        message = raw.parse()
-    except ValidationError as exc:
-        # The SDK validates the JSON while parsing, so a response cut off at max_tokens surfaces here as
-        # "EOF while parsing ..." before we can see stop_reason. Price it and report the real cause.
-        message = BetaMessage.model_validate(raw.http_response.json())
-        record_cost(kind, message, ticker)
-        if message.stop_reason == "max_tokens":
-            raise AnalystError(f"{kind}: output truncated at max_tokens={max_tokens} "
-                               f"({message.usage.output_tokens} output tokens)") from exc
-        check_stop(message)
-        raise AnalystError(f"{kind}: output did not match the schema: {exc}") from exc
+    ) as stream:
+        message = stream.get_final_message()
     record_cost(kind, message, ticker)
+    if message.stop_reason == "max_tokens":
+        raise AnalystError(f"{kind}: output truncated at max_tokens={max_tokens} ({message.usage.output_tokens} output tokens)")
     check_stop(message)
-    if message.parsed_output is None:
-        raise AnalystError(f"{kind}: no parseable output")
-    return message.parsed_output, message
+    text = "".join(b.text for b in message.content if b.type == "text")
+    try:
+        return adapter.validate_json(text), message
+    except ValidationError as exc:
+        raise AnalystError(f"{kind}: output did not match the schema: {exc}") from exc
 
 
 def text_call(kind: str, system: str, messages: list, *, ticker: str | None = None, model: str | None = None,
