@@ -6,6 +6,7 @@ import "./styles/modern-theme.css";
 import "./styles/town.css";
 import "./styles/office.css";
 import "./styles/dashboard.css";
+import "./styles/voice.css";
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>

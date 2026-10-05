@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import { timeAgo } from "../format.js";
+import AudioPlayer from "./AudioPlayer.jsx";
 import Markdown from "./Markdown.jsx";
 
 /** Start a meeting and/or read the latest minutes. Polls while a meeting is running. */
@@ -54,6 +56,7 @@ export default function MeetingPanel({ onClose }) {
         <button className="btn primary" onClick={start} disabled={starting || meeting?.status === "running"}>
           {meeting?.status === "running" ? "Meeting in progress…" : starting ? "Starting…" : "Start a meeting now"}
         </button>
+        <Link className="btn" to="/boardroom" onClick={onClose} style={{ marginLeft: 8 }}>Enter the boardroom</Link>
         {error && <p className="down" role="alert">{error}</p>}
         {meeting && meeting.status === "running" && (
           <p className="muted" aria-live="polite"><span className="typing"><span /><span /><span /></span> Agents are debating. This takes 1-3 minutes.</p>
@@ -61,7 +64,10 @@ export default function MeetingPanel({ onClose }) {
         {meeting?.status === "failed" && <p className="down">Last meeting failed: {meeting.error}</p>}
         {meeting?.minutes_md ? (
           <div style={{ marginTop: 16 }}>
-            <p className="faint" style={{ fontSize: 13 }}>Latest minutes · {timeAgo(meeting.finished_at || meeting.started_at)}</p>
+            <p className="faint" style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
+              Latest minutes · {timeAgo(meeting.finished_at || meeting.started_at)}
+              <AudioPlayer text={meeting.minutes_md} agent="chair" color="#a855f7" label="Read aloud" />
+            </p>
             <Markdown>{meeting.minutes_md}</Markdown>
           </div>
         ) : (

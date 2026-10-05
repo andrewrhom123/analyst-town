@@ -110,7 +110,7 @@ function PerformanceStrip({ today, series }) {
 const VIEWS = ["Pitch", "Memo", "Model", "Chart"];
 
 /** Everything about one ticker: pitch/conviction, memo, model, chart, downloads. */
-export default function TickerScreen({ agentId, ticker, compact = false }) {
+export default function TickerScreen({ agentId, ticker, color, compact = false }) {
   const [view, setView] = useState("Pitch");
   const [series, setSeries] = useState(null);
   const { data: b, error } = useLoad(() => api.briefing(agentId, ticker), [agentId, ticker]);
@@ -124,7 +124,7 @@ export default function TickerScreen({ agentId, ticker, compact = false }) {
       {view === "Pitch" && (
         b ? (
           <>
-            <ElevatorPitch b={b} />
+            <ElevatorPitch b={b} agentId={agentId} color={color} />
             {b.price?.price != null && (
               <section className="section glass">
                 <h3>Price performance</h3>

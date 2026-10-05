@@ -3,7 +3,7 @@ import { api } from "../api/client.js";
 import TownView from "../components/TownView.jsx";
 import { usePolling } from "../hooks.js";
 
-export default function Home({ onOpenMeeting }) {
+export default function Home() {
   const navigate = useNavigate();
   const { data: agents, error, loading } = usePolling(() => api.agents(), [], 30000);
 
@@ -23,5 +23,5 @@ export default function Home({ onOpenMeeting }) {
     const owner = agents.find((a) => a.tickers.some((t) => t.symbol === symbol));
     if (owner) navigate(`/agent/${owner.id}?t=${encodeURIComponent(symbol)}`);
   };
-  return <TownView agents={agents} onEnterAgent={(a) => navigate(`/agent/${a.id}`)} onOpenHall={onOpenMeeting} onTicker={openTicker} />;
+  return <TownView agents={agents} onEnterAgent={(a) => navigate(`/agent/${a.id}`)} onOpenHall={() => navigate("/boardroom")} onTicker={openTicker} />;
 }

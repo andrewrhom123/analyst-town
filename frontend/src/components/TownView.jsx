@@ -81,23 +81,23 @@ function Carousel({ agents, onEnterAgent, onOpenHall }) {
           </div>
         ))}
         <div role="listitem" style={{ display: "contents" }}>
-          <button className="agent-card glass hall-card" onClick={onOpenHall} aria-label="Open the town hall meeting">
+          <button className="agent-card glass hall-card" onClick={onOpenHall} aria-label="Enter the boardroom">
             <div className="head">
-              <div className="avatar" style={{ border: "1px solid var(--text-2)" }} aria-hidden="true">🏛️</div>
+              <div className="avatar" style={{ border: "1px solid var(--text-2)" }} aria-hidden="true">🏙️</div>
               <div>
-                <h2>Town Hall</h2>
-                <div className="sub">Daily agent meeting · 4:30pm ET</div>
+                <h2>Boardroom</h2>
+                <div className="sub">Daily pod meeting over Central Park · 4:30pm ET</div>
               </div>
             </div>
             <p className="muted" style={{ margin: 0 }}>
-              Agents present their theses, challenge each other and update their calls. Tap to read the latest minutes or start a meeting.
+              Agents present their theses, challenge each other and update their calls. Tap to hear the latest meeting in their voices, or ask the pod a question.
             </p>
           </button>
         </div>
       </div>
       <div className="carousel-dots" role="tablist" aria-label="Agents">
         {Array.from({ length: total }, (_, i) => (
-          <button key={i} role="tab" aria-current={i === active} aria-label={i < agents.length ? agents[i].name : "Town Hall"} onClick={() => go(i)}>
+          <button key={i} role="tab" aria-current={i === active} aria-label={i < agents.length ? agents[i].name : "Boardroom"} onClick={() => go(i)}>
             <span />
           </button>
         ))}
@@ -143,7 +143,7 @@ export default function TownView({ agents, onEnterAgent, onOpenHall, onTicker })
         </Suspense>
         <div className="town-hud glass">
           <h1>Analyst Town</h1>
-          <p>Click a house to step into an agent's office; the town hall runs meetings. Brighter screens = fresher thinking.</p>
+          <p>Central Park. Click a house to step into an agent's office; the town hall or the tower on the skyline takes you up to the boardroom. Brighter screens = fresher thinking.</p>
           <TownStats agents={agents} />
         </div>
       </div>

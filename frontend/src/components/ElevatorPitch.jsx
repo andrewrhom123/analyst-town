@@ -1,4 +1,5 @@
 import { changeClass, fmtPct, fmtPrice, timeAgo } from "../format.js";
+import AudioPlayer from "./AudioPlayer.jsx";
 import ConvictionMeter from "./ConvictionMeter.jsx";
 import Markdown from "./Markdown.jsx";
 
@@ -13,8 +14,20 @@ function RangeBar({ low, high, now }) {
   );
 }
 
+/** What the analyst says when you press "Hear the pitch": the call, conviction and the thesis in brief. */
+function spokenPitch(b) {
+  if (!b.headline) return "";
+  const lv = b.price?.levels || {};
+  const parts = [`${b.name || b.ticker}.`, `${b.headline}.`];
+  if (b.signal) parts.push(`My call is ${b.signal}${b.conviction_level ? `, conviction ${b.conviction_level} out of 10` : ""}.`);
+  if (lv.entry_zone_low != null && lv.entry_zone_high != null) parts.push(`Entry zone ${lv.entry_zone_low} to ${lv.entry_zone_high} dollars.`);
+  if (lv.target_price != null) parts.push(`Target ${lv.target_price}${lv.stop_loss != null ? `, stop at ${lv.stop_loss}` : ""}.`);
+  parts.push(b.thesis || b.executive_summary || "");
+  return parts.join(" ");
+}
+
 /** Formatted pitch: price + signal + conviction + executive summary + key number + levels. */
-export default function ElevatorPitch({ b }) {
+export default function ElevatorPitch({ b, agentId, color }) {
   const p = b.price || {};
   const lv = p.levels || {};
   return (
@@ -25,6 +38,7 @@ export default function ElevatorPitch({ b }) {
         <span className={`chg ${changeClass(p.change_pct)}`}>{fmtPct(p.change_pct)} today</span>
         {b.signal && <span className={`signal ${b.signal}`}>{b.signal}</span>}
         {b.stance && <span className="chip">research: {b.stance}</span>}
+        <AudioPlayer text={spokenPitch(b)} agent={agentId} color={color} label="Hear the pitch" className="pitch-audio" />
       </div>
       <div className="faint" style={{ fontSize: 13 }}>{b.name} · {b.analyst} · thesis updated {timeAgo(b.thesis_updated)}</div>
 

@@ -25,6 +25,7 @@ from agents.coverage_files import FILENAMES, list_files, price_snapshot, read_fi
 from agents.meeting import latest_minutes, run_meeting
 from agents.registry import CoverageError, add_analyst, analyst_info, get_context, list_coverage, reassign_ticker, update_ticker
 from agents.thesis import current_thesis, thesis_history
+from agents import voice
 from data_sources.cache import get_cached
 from data_sources.price_feed import chart_series, latest_tick
 from database.db import get_db, init_db
@@ -160,6 +161,7 @@ def status(db: Session = Depends(get_db)):
         "environment": config.ENVIRONMENT,
         "database": "sqlite" if config.DATABASE_URL.startswith("sqlite") else "postgresql",
         "missing_config": config.missing_keys(),
+        "voice": config.voice_status(),
         "sms_alerts": {"enabled": config.SMS_ALERTS_ENABLED, "configured": config.sms_configured(), "threshold_pct": config.ALERT_MOVE_PCT},
         "models": {"deep_dive": config.DEEP_MODEL, "light": config.LIGHT_MODEL},
         "budget": {**(budget := llm.budget_status()), "buildout": {
@@ -396,6 +398,57 @@ def get_latest_meeting():
     if m is None:
         raise HTTPException(status_code=404, detail="No meetings yet")
     return m
+
+
+class SpeakIn(BaseModel):
+    text: str = Field(min_length=1, max_length=20000)
+    agent: str | None = Field(None, description="Analyst key whose voice to use, or 'chair'")
+
+
+def _voice_call(fn, *args):
+    try:
+        return fn(*args)
+    except voice.VoiceNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except voice.VoiceLimitReached as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    except voice.VoiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.get("/voice/status")
+def voice_status():
+    """Which voice features are configured, the voice profile per analyst, and today's TTS usage."""
+    return {**config.voice_status(), **voice.usage_today(),
+            "profiles": {a["key"]: voice.profile_for(a["key"]).public() for a in list_coverage()},
+            "chair": voice.CHAIR.public()}
+
+
+@app.post("/voice/tts", dependencies=[Depends(require_key)])
+def voice_tts(body: SpeakIn):
+    """Speak `text` in the analyst's voice (ElevenLabs). Returns audio/mpeg; replays come from the disk cache."""
+    audio, info = _voice_call(voice.synthesize, body.text, body.agent)
+    return Response(content=audio, media_type="audio/mpeg",
+                    headers={"X-Voice": info["voice"], "X-Voice-Cached": str(info["cached"]).lower(), "Cache-Control": "private, max-age=86400"})
+
+
+@app.post("/voice/stt", dependencies=[Depends(require_key)])
+async def voice_stt(request: Request):
+    """Transcribe a recording (raw request body, e.g. audio/webm from MediaRecorder) with Whisper."""
+    audio = await request.body()
+    vocabulary = [x for a in list_coverage() for t in a["tickers"] for x in (t["symbol"], t["name"])]
+    text_out = _voice_call(voice.transcribe, audio, request.headers.get("content-type", "audio/webm"), vocabulary)
+    return {"text": text_out}
+
+
+@app.get("/meetings/latest/script")
+def get_latest_meeting_script(db: Session = Depends(get_db)):
+    """The latest finished meeting as spoken turns for boardroom playback (speaker, voice, round, text)."""
+    m = db.scalar(select(Meeting).where(Meeting.status == "done").order_by(Meeting.started_at.desc()).limit(1))
+    if m is None:
+        raise HTTPException(status_code=404, detail="No finished meetings yet")
+    return {"meeting_id": m.id, "finished_at": _iso(m.finished_at),
+            "lines": voice.meeting_script(m.id, m.transcript or {}, m.minutes_md)}
 
 
 @app.get("/meetings")

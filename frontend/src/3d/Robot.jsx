@@ -9,21 +9,43 @@ const DARK = { color: "#1f2937", metalness: 0.3, roughness: 0.4 };
 /**
  * Glossy white robot with agent-colored accents. `typing` swings the forearms over a keyboard
  * (faster while working) and nods the head at the screen; the antenna blinks while working.
+ * `talking` (its voice is playing) stops typing: the mouth bar flickers with speech, the head lifts and one hand gestures.
  */
-export default function Robot({ color = "#06b6d4", working = false, typing = false, phase = 0, scale = 1, seated = false, ...props }) {
+export default function Robot({ color = "#06b6d4", working = false, typing = false, talking = false, phase = 0, scale = 1, seated = false, ...props }) {
   const bob = useRef();
   const antenna = useRef();
   const visor = useRef();
   const head = useRef();
   const armL = useRef();
   const armR = useRef();
+  const mouth = useRef();
+  const armPose = typing ? -1.15 : seated ? -1.1 : 0;
   useBob(bob, { speed: working ? 3 : 1.4, height: seated ? 0.012 : 0.04, phase });
 
   useFrame(({ clock }) => {
     const t = clock.elapsedTime + phase;
     if (antenna.current) antenna.current.emissiveIntensity = working ? 1.4 + Math.sin(t * 10) * 1.0 : 0.7 + Math.sin(t * 2) * 0.3;
-    if (visor.current) visor.current.emissiveIntensity = 1.2 + Math.sin(t * 0.8) * 0.2;
-    if (typing) {
+    if (visor.current) visor.current.emissiveIntensity = talking ? 1.6 + Math.sin(t * 3) * 0.3 : 1.2 + Math.sin(t * 0.8) * 0.2;
+    if (mouth.current) {
+      // syllable-like flicker from two out-of-phase waves
+      const open = talking ? Math.max(0.15, Math.abs(Math.sin(t * 11) * Math.sin(t * 3.7 + 1))) : 0.15;
+      mouth.current.scale.y = open;
+    }
+    if (talking) {
+      if (armL.current) armL.current.rotation.x = armPose + 0.05;
+      if (armR.current) {
+        armR.current.rotation.x = armPose + 0.35 + Math.sin(t * 2.2) * 0.25;
+        armR.current.rotation.z = -0.25 + Math.sin(t * 1.6) * 0.1;
+      }
+      if (head.current) {
+        head.current.rotation.x = -0.05 + Math.sin(t * 4.5) * 0.03;
+        head.current.rotation.y = Math.sin(t * 0.9) * 0.18;
+      }
+    } else if (armR.current) {
+      armR.current.rotation.z = -0.08; // back to rest after a gesture
+      if (!typing) { armL.current.rotation.x = armPose; armR.current.rotation.x = armPose; }
+    }
+    if (typing && !talking) {
       const speed = working ? 16 : 9;
       if (armL.current) armL.current.rotation.x = -1.15 + Math.sin(t * speed) * 0.12;
       if (armR.current) armR.current.rotation.x = -1.15 + Math.sin(t * speed + Math.PI) * 0.12;
@@ -33,8 +55,6 @@ export default function Robot({ color = "#06b6d4", working = false, typing = fal
       }
     }
   });
-
-  const armPose = typing ? -1.15 : seated ? -1.1 : 0;
 
   return (
     <group scale={scale} {...props}>
@@ -94,6 +114,11 @@ export default function Robot({ color = "#06b6d4", working = false, typing = fal
           <mesh position={[0, 0.01, 0.174]}>
             <planeGeometry args={[0.3, 0.07]} />
             <meshStandardMaterial ref={visor} color={color} emissive={color} emissiveIntensity={1.3} toneMapped={false} />
+          </mesh>
+          {/* mouth bar (animates while talking) */}
+          <mesh ref={mouth} position={[0, -0.065, 0.174]} scale={[1, 0.15, 1]}>
+            <planeGeometry args={[0.14, 0.06]} />
+            <meshStandardMaterial color={color} emissive={color} emissiveIntensity={1.2} toneMapped={false} />
           </mesh>
           {/* ear pods */}
           {[-0.235, 0.235].map((x) => (

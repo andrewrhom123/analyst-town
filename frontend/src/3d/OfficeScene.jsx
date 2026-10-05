@@ -2,7 +2,8 @@ import { ContactShadows, OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import * as THREE from "three";
 import { useEffect, useMemo } from "react";
-import { Chair, CoffeeCup, Desk, Keyboard, LiveMonitor, Papers, Plant } from "./Props.jsx";
+import { useParkViewTexture } from "./Park.jsx";
+import { Bookshelf, Chair, CoffeeCup, Desk, DeskLamp, Keyboard, LiveMonitor, Papers, Plant, Whiteboard } from "./Props.jsx";
 import Robot from "./Robot.jsx";
 import { rng, seedOf } from "./screens.js";
 
@@ -88,8 +89,24 @@ function Screen({ ticker, position, rotation, selected, color, onSelect }) {
   );
 }
 
-/** Bright modern office: the robot typing at its desk, a wall of ticker monitors (click to switch), research strewn about. */
-export default function OfficeScene({ agent, tickers, selected, onSelect }) {
+/** Window onto Central Park: painted view, white frame and mullions. */
+function ParkWindow({ seed, ...props }) {
+  const view = useParkViewTexture(seed);
+  return (
+    <group {...props}>
+      <mesh><planeGeometry args={[2.4, 2.2]} /><meshBasicMaterial map={view} toneMapped={false} /></mesh>
+      <mesh position={[0, 0, 0.01]}><boxGeometry args={[0.05, 2.2, 0.02]} /><meshStandardMaterial color="#ffffff" /></mesh>
+      <mesh position={[0, 0.2, 0.01]}><boxGeometry args={[2.4, 0.05, 0.02]} /><meshStandardMaterial color="#ffffff" /></mesh>
+      <mesh position={[0, 0, -0.01]}><boxGeometry args={[2.56, 2.36, 0.02]} /><meshStandardMaterial color="#f3f4f6" /></mesh>
+    </group>
+  );
+}
+
+/**
+ * Bright modern office overlooking the park: the robot typing at a three-monitor desk, a wall of ticker
+ * monitors (click to switch), whiteboard, bookshelf of binders, research strewn about. `talking` = its voice is playing.
+ */
+export default function OfficeScene({ agent, tickers, selected, onSelect, talking = false }) {
   const color = agent?.color || "#06b6d4";
   const working = agent?.status === "working";
   const seed = seedOf(agent?.id || "office");
@@ -119,14 +136,15 @@ export default function OfficeScene({ agent, tickers, selected, onSelect }) {
         <planeGeometry args={[14, 6]} />
         <meshStandardMaterial color="#ffffff" roughness={0.9} />
       </mesh>
-      <mesh position={[-4.6, 2.6, -1.98]}>
-        <planeGeometry args={[2.4, 2.2]} />
-        <meshBasicMaterial color="#bae6fd" />
-      </mesh>
-      <mesh position={[4.6, 2.6, -1.98]}>
-        <planeGeometry args={[2.4, 2.2]} />
-        <meshBasicMaterial color="#bae6fd" />
-      </mesh>
+      <ParkWindow seed={seed} position={[-5.4, 2.6, -1.98]} />
+      <ParkWindow seed={seed + 5} position={[5.4, 2.6, -1.98]} />
+      <Whiteboard color={color} seed={seed} position={[-3.3, 2.0, -1.96]} scale={0.95} />
+      <Bookshelf color={color} seed={seed} position={[3.5, 0, -1.85]} scale={1.1} />
+      {/* desk-side papers on the floor and a filing cabinet */}
+      <mesh position={[-2.4, 0.42, -1.6]} castShadow><boxGeometry args={[0.55, 0.84, 0.5]} /><meshStandardMaterial color="#f3f4f6" /></mesh>
+      {[0.2, 0.48, 0.76].map((y) => <mesh key={y} position={[-2.4, y, -1.345]}><boxGeometry args={[0.3, 0.025, 0.02]} /><meshStandardMaterial color="#9ca3af" metalness={0.6} /></mesh>)}
+      <Papers position={[-2.4, 0.84, -1.6]} seed={seed + 2} count={4} scale={1.2} />
+      <Papers position={[-1.9, 0.005, 0.9]} seed={seed + 4} count={3} scale={1.6} />
       <mesh position={[0, 0.06, -1.97]}><boxGeometry args={[14, 0.12, 0.04]} /><meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} /></mesh>
 
       {/* desk setup */}
@@ -134,6 +152,8 @@ export default function OfficeScene({ agent, tickers, selected, onSelect }) {
       <Keyboard position={[0, 0.76, 0.6]} scale={1.3} />
       <LiveMonitor position={[-0.95, 1.2, 0.0]} rotation={[0, 0.35, 0]} width={0.7} height={0.42} color={color} seed={seed + 3} label="RESEARCH" working={working} />
       <LiveMonitor position={[0.95, 1.2, 0.0]} rotation={[0, -0.35, 0]} width={0.7} height={0.42} color={color} seed={seed + 4} label="MODEL" working={working} variant={1} />
+      <LiveMonitor position={[0, 1.25, -0.12]} width={0.95} height={0.46} color={color} seed={seed + 5} label={selected || "TAPE"} working={working} />
+      <DeskLamp position={[-1.45, 0.76, -0.05]} scale={1.4} />
       <CoffeeCup position={[1.25, 0.76, 0.5]} color={color} scale={1.4} />
       <Papers position={[-1.15, 0.76, 0.45]} seed={seed} count={6} scale={1.5} />
       <Papers position={[0.62, 0.76, 0.6]} seed={seed + 9} count={3} scale={1.5} />
@@ -142,7 +162,7 @@ export default function OfficeScene({ agent, tickers, selected, onSelect }) {
 
       {/* the analyst, seated and typing, facing the screen wall */}
       <Chair position={[0, 0, 1.1]} rotation={[0, Math.PI, 0]} scale={1.3} color="#374151" back={false} />
-      <Robot color={color} working={working} typing seated position={[0, 0.3, 1.0]} rotation={[0, Math.PI, 0]} scale={0.7} />
+      <Robot color={color} working={working} typing talking={talking} seated position={[0, 0.3, 1.0]} rotation={[0, Math.PI, 0]} scale={0.7} />
 
       {screens.map(({ t, position, rotation }) => (
         <Screen key={t.symbol} ticker={t} position={position} rotation={rotation} color={color}

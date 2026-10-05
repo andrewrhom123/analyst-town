@@ -7,3 +7,5 @@ __pycache__/
 *.db-journal
 # Disk mirror of the per-ticker files (the database is the source of truth)
 coverage/
+# Cached ElevenLabs voice clips
+data_cache/

@@ -26,10 +26,20 @@ export default function InstructionsTab({ onClose }) {
 
         <h3>How to navigate</h3>
         <ul className="list muted">
-          <li><b>Laptop:</b> click a house to enter that agent's office. The town hall in the middle runs the daily meeting.</li>
+          <li><b>Laptop:</b> the town sits in Central Park. Click a house to enter that agent's office; the town hall or the glass tower opens the boardroom.</li>
           <li><b>Phone:</b> swipe the cards and tap one to enter the office.</li>
           <li>Inside an office, click a screen (or a ticker tab) to switch tickers. On a phone, swipe left/right on the content.</li>
           <li>Use the chat to talk to the agent. Plain text goes to the ticker you're looking at.</li>
+        </ul>
+
+        <h3>Voice</h3>
+        <ul className="list muted">
+          <li><b>🎙 Mic</b> (next to the chat box): tap and talk. It sends when you stop talking; your words are transcribed by Whisper.</li>
+          <li><b>▶</b> on any reply, or <b>Hear the pitch</b>: the analyst reads it aloud in their own voice (four distinct ElevenLabs voices, one per desk).</li>
+          <li><b>🔊 Voice replies</b>: every answer is read aloud. <b>🎙 Hands-free</b>: talk, hear the answer, and the mic reopens so you can keep going.</li>
+          <li><b>Boardroom</b> (town hall or the tower on the skyline): replay the latest meeting with each analyst speaking in turn, or ask the pod a question out loud.</li>
+          <li><b>🔈/🔊</b> (header): office sounds (keyboards clacking while agents work).</li>
+          <li>Voice clips are cached, so replays are free; new speech is capped per day on the backend.</li>
         </ul>
 
         <h3>Commands</h3>
@@ -69,7 +79,7 @@ export default function InstructionsTab({ onClose }) {
           <li><b>Chat</b>: talk to the agent</li>
           <li><b>Download</b>: PDF memo, CSV and Excel model, JSON research</li>
           <li><b>Price chart</b>: 30-day trend with entry zone, target and stop lines (tap to expand, pinch to zoom)</li>
-          <li><b>🗣️</b> (header): start a meeting or read the latest minutes · <b>⚙︎</b>: add your access key</li>
+          <li><b>🗣️</b> (header): start a meeting or read the latest minutes · <b>🔈</b>: office sounds · <b>⚙︎</b>: add your access key</li>
         </ul>
       </div>
     </div>

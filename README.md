@@ -101,9 +101,12 @@ Or `POST /command {"text": "/ask TTD: ..."}` from any client. Other endpoints: `
 
 ## Frontend: Analyst Town (`frontend/`)
 
-React + Vite + react-three-fiber. Laptop (>= 1200px): a 3D town with one house per agent (color-coded,
-window glow = how fresh the agent's thinking is) around a town hall that runs meetings; click a house to
-fly into the agent's office (robot at a desk, one monitor per ticker; click a monitor to switch).
+React + Vite + react-three-fiber. Laptop (>= 1200px): a 3D town in Central Park (lawns, the Lake and Bow
+Bridge, the Manhattan skyline) with one house per agent (color-coded, window glow = how fresh the agent's
+thinking is) around a town hall; click a house to fly into the agent's office (robot at a three-monitor desk,
+one wall monitor per ticker, park-view windows; click a monitor to switch). The town hall, or the glass tower
+on Central Park South, opens the **boardroom** (`/boardroom`): the pod around a table overlooking the park,
+replaying the latest meeting speaker by speaker, plus "Ask the pod".
 Phone/tablet: a swipeable card carousel and a full-screen office with ticker tabs, swipe between tickers,
 and a sticky chat dock that rides above the keyboard. three.js is only downloaded on laptop-size screens.
 
@@ -118,6 +121,22 @@ Chat commands work in every office: `/briefing TTD`, `/ask TTD: ...` (or just ty
 `/add MSTR to Fintech`, `/remove MARA from Fintech`, `/reassign AMZN from AI to Internet Platforms`,
 `/coverage Fintech`. Actions that spend credits need the backend's `API_ACCESS_KEY`, entered once under
 Settings (gear icon) and stored only in that browser.
+
+### Voice
+
+Agents speak with ElevenLabs (four voice profiles, one per desk: macro, fintech, internet, AI, plus a meeting
+chair) and you can talk to them through OpenAI Whisper. Set `ELEVENLABS_API_KEY` and/or `OPENAI_API_KEY` on
+the backend; without a key that half of voice is simply hidden. Keys never reach the browser: the frontend
+calls `POST /voice/tts` (returns MP3) and `POST /voice/stt` (raw recording in, `{text}` out), both behind
+`API_ACCESS_KEY`. `GET /voice/status` reports what's enabled; `GET /meetings/latest/script` turns the last
+meeting into spoken turns for the boardroom.
+
+- Chat: 🎙 mic (auto-sends when you stop talking), ▶ on every reply, "🔊 Voice replies" (read every answer),
+  and "🎙 Hands-free" (talk → hear the answer → mic reopens). "Hear the pitch" on each ticker.
+- Header 🔈/🔊 toggles synthesized office ambience (keyboards, faster while an agent works).
+- Cost control: clips are cached on disk (`VOICE_CACHE_DIR`), so replays are free; new speech is capped at
+  `VOICE_DAILY_CHAR_LIMIT` characters per day and `VOICE_MAX_CHARS` per clip (cut at a sentence end).
+- Swap a voice with `ELEVENLABS_VOICE_MACRO` / `_FINTECH` / `_INTERNET` / `_AI` / `_CHAIR` (any ElevenLabs voice ID).
 
 Deploy to Vercel: import the repo with **Root Directory = `frontend`** (framework preset Vite), and set
 `REACT_APP_API_URL=https://<your-railway-app>.up.railway.app`. `vercel.json` handles client-side routes.

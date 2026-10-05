@@ -5,7 +5,9 @@ import InstructionsTab from "./components/InstructionsTab.jsx";
 import MeetingPanel from "./components/MeetingPanel.jsx";
 import { timeAgo } from "./format.js";
 import { usePolling } from "./hooks.js";
+import { useVoicePrefs, useVoiceStatus } from "./voice/voice.js";
 import AgentDetail from "./pages/AgentDetail.jsx";
+import Boardroom from "./pages/Boardroom.jsx";
 import Home from "./pages/Home.jsx";
 
 function SettingsModal({ onClose }) {
@@ -36,6 +38,8 @@ export default function App() {
   const [modal, setModal] = useState(null); // "help" | "settings" | "meeting"
   const status = usePolling(() => api.status(), [], 30000);
   const budget = status.data?.budget;
+  const voice = useVoiceStatus();
+  const [prefs, setPrefs] = useVoicePrefs();
 
   return (
     <>
@@ -62,6 +66,10 @@ export default function App() {
           ) : null}
         </div>
         <nav className="header-actions" aria-label="Main">
+          <button className="btn icon" onClick={() => setPrefs({ ambient: !prefs.ambient })} aria-pressed={!!prefs.ambient}
+            aria-label={prefs.ambient ? "Turn office sounds off" : "Turn office sounds on"} title={`Office sounds ${prefs.ambient ? "on" : "off"}${voice.tts ? "" : " (agent voices need ELEVENLABS_API_KEY)"}`}>
+            {prefs.ambient ? "🔊" : "🔈"}
+          </button>
           <button className="btn icon" onClick={() => setModal("meeting")} aria-label="Agent meeting" title="Agent meeting">🗣️</button>
           <button className="btn icon" onClick={() => setModal("help")} aria-label="Instructions" title="Instructions">?</button>
           <button className="btn icon" onClick={() => setModal("settings")} aria-label="Settings" title="Settings">⚙︎</button>
@@ -69,9 +77,10 @@ export default function App() {
       </header>
 
       <Routes>
-        <Route path="/" element={<Home onOpenMeeting={() => setModal("meeting")} />} />
+        <Route path="/" element={<Home />} />
         <Route path="/agent/:agentId" element={<AgentDetail />} />
-        <Route path="*" element={<Home onOpenMeeting={() => setModal("meeting")} />} />
+        <Route path="/boardroom" element={<Boardroom />} />
+        <Route path="*" element={<Home />} />
       </Routes>
 
       {modal === "help" && <InstructionsTab onClose={() => setModal(null)} />}

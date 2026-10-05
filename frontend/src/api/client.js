@@ -55,6 +55,26 @@ async function request(path, { method = "GET", body, signal } = {}) {
   return type.includes("application/json") ? res.json() : res.text();
 }
 
+/** Binary-capable POST (voice): returns the raw Response so callers can read a Blob. */
+async function rawPost(path, { body, contentType, json } = {}) {
+  const headers = { "Content-Type": json ? "application/json" : contentType };
+  const key = getAccessKey();
+  if (key) headers["X-API-Key"] = key;
+  let res;
+  try {
+    res = await fetch(`${API_BASE}${path}`, { method: "POST", headers, body: json ? JSON.stringify(json) : body });
+  } catch {
+    throw new ApiError(0, `Can't reach the backend at ${API_BASE}. Is it running?`);
+  }
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch { /* non-JSON error body */ }
+    if (res.status === 401) detail = "Voice needs your access key. Add it under Settings (gear icon).";
+    throw new ApiError(res.status, detail);
+  }
+  return res;
+}
+
 const enc = encodeURIComponent;
 const t = (agentId, ticker) => `/agents/${enc(agentId)}/ticker/${enc(ticker)}`;
 
@@ -73,6 +93,12 @@ export const api = {
   command: (text, ticker) => request("/command", { method: "POST", body: { text, ticker } }),
   meeting: () => request("/meeting", { method: "POST" }),
   latestMeeting: () => request("/meetings/latest"),
+  meetingScript: () => request("/meetings/latest/script"),
+  voiceStatus: () => request("/voice/status"),
+  /** MP3 Blob of `text` spoken in the agent's voice (agent = analyst key or "chair"). */
+  speak: async (text, agent) => (await rawPost("/voice/tts", { json: { text, agent } })).blob(),
+  /** Whisper transcription of a recorded Blob: { text }. */
+  transcribe: async (blob) => (await rawPost("/voice/stt", { body: blob, contentType: blob.type || "audio/webm" })).json(),
   coverage: (agentName) => request(`/coverage/${enc(agentName)}`),
   downloadUrl: (agentId, ticker, kind) => `${API_BASE}${t(agentId, ticker)}/download/${kind}`,
 };

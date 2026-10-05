@@ -1,8 +1,8 @@
-import { Html } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { useRef, useState } from "react";
 import * as THREE from "three";
 import { freshness } from "../format.js";
+import { Label } from "./Label.jsx";
 import { Chair, CoffeeCup, Desk, Keyboard, LiveMonitor, Papers, Plant } from "./Props.jsx";
 import Robot from "./Robot.jsx";
 import { seedOf } from "./screens.js";
@@ -125,7 +125,7 @@ export default function House({ agent, position, rotation = 0, onEnter, index = 
         {/* yard */}
         <Tree seed={seed} position={[W / 2 + 0.55, 0, D / 2 - 0.2]} />
 
-        <Html position={[0, BASE + H + 1.05, 0]} center zIndexRange={[10, 0]}>
+        <Label position={[0, BASE + H + 1.05, 0]} center zIndexRange={[10, 0]}>
           <div className="house-label">
             <span className="name"><i style={{ background: color }} />{agent.name.replace(" Analyst", "")}</span>
             <div className="meta">
@@ -133,7 +133,7 @@ export default function House({ agent, position, rotation = 0, onEnter, index = 
               <span className={working ? "working" : ""}>{agent.status}</span>
             </div>
           </div>
-        </Html>
+        </Label>
       </group>
     </group>
   );
@@ -159,12 +159,64 @@ export function TownHall({ onEnter }) {
         <LiveMonitor key={i} position={[Math.sin((i * Math.PI) / 2) * 0.55, 1.5, Math.cos((i * Math.PI) / 2) * 0.55]} rotation={[0, (i * Math.PI) / 2, 0]}
           width={0.95} height={0.55} color={["#06b6d4", "#d946ef", "#84cc16", "#f59e0b"][i]} seed={100 + i} label={["SPY", "QQQ", "BTC", "DXY"][i]} variant={i % 2} />
       ))}
-      <Html position={[0, 3.9, 0]} center zIndexRange={[10, 0]}>
+      <Label position={[0, 3.9, 0]} center zIndexRange={[10, 0]}>
         <div className="house-label">
           <span className="name"><i style={{ background: "#d946ef" }} />Town Hall</span>
-          <div className="meta">Daily meeting · click to open</div>
+          <div className="meta">Daily meeting · click for the boardroom</div>
         </div>
-      </Html>
+      </Label>
+    </group>
+  );
+}
+
+/**
+ * Glass tower on Central Park South. Its lit top floor is the boardroom where the pod meets, looking out over
+ * the park and the town. Click to enter the boardroom.
+ */
+export function BoardroomTower({ position, onEnter }) {
+  const { group, hovered, handlers } = useHover(1.02);
+  const H = 24; // floors below the boardroom
+  const W = 6;
+  const floors = Array.from({ length: Math.floor(H / 1.2) }, (_, i) => 0.6 + i * 1.2);
+  return (
+    <group position={position}>
+      <group ref={group} onClick={(e) => { e.stopPropagation(); onEnter?.(); }} {...handlers}>
+        {/* podium */}
+        <mesh position={[0, 0.6, 0]} castShadow receiveShadow><boxGeometry args={[W + 2, 1.2, W + 1]} /><meshStandardMaterial color="#f1f5f9" roughness={0.7} /></mesh>
+        {/* curtain wall + floor plates */}
+        <mesh position={[0, H / 2 + 1.2, 0]} castShadow>
+          <boxGeometry args={[W, H, W * 0.8]} />
+          <meshPhysicalMaterial color="#bcd7ea" roughness={0.12} metalness={0.6} clearcoat={1} />
+        </mesh>
+        {floors.map((y) => (
+          <mesh key={y} position={[0, y + 1.2, 0]}><boxGeometry args={[W + 0.06, 0.08, W * 0.8 + 0.06]} /><meshStandardMaterial color="#f8fafc" /></mesh>
+        ))}
+        {/* vertical fins */}
+        {[-2, -1, 0, 1, 2].map((i) => (
+          <mesh key={i} position={[i * (W / 5), H / 2 + 1.2, W * 0.4 + 0.03]}><boxGeometry args={[0.06, H, 0.06]} /><meshStandardMaterial color="#e2e8f0" metalness={0.4} /></mesh>
+        ))}
+        {/* boardroom floor: double height, glowing, neon fascia */}
+        <group position={[0, H + 1.2, 0]}>
+          <mesh position={[0, 1.2, 0]}>
+            <boxGeometry args={[W + 0.3, 2.4, W * 0.8 + 0.3]} />
+            <meshPhysicalMaterial color="#fff7ed" emissive="#fde68a" emissiveIntensity={hovered ? 0.9 : 0.55} transparent opacity={0.92} roughness={0.1} />
+          </mesh>
+          {/* table + screen silhouettes seen through the glass */}
+          <mesh position={[0, 0.75, W * 0.4 + 0.16]}><boxGeometry args={[3.4, 0.12, 0.02]} /><meshStandardMaterial color="#334155" /></mesh>
+          <mesh position={[0, 1.6, W * 0.4 + 0.16]}><boxGeometry args={[1.6, 0.8, 0.02]} /><meshStandardMaterial color="#0f172a" emissive="#d946ef" emissiveIntensity={0.5} /></mesh>
+          <mesh position={[0, 2.45, 0]}><boxGeometry args={[W + 0.5, 0.1, W * 0.8 + 0.5]} /><meshStandardMaterial color="#d946ef" emissive="#d946ef" emissiveIntensity={hovered ? 2.2 : 1.3} toneMapped={false} /></mesh>
+        </group>
+        {/* crown + spire */}
+        <mesh position={[0, H + 4.1, 0]} castShadow><boxGeometry args={[W * 0.7, 0.9, W * 0.55]} /><meshStandardMaterial color="#f8fafc" /></mesh>
+        <mesh position={[0, H + 6.5, 0]}><cylinderGeometry args={[0.05, 0.12, 4, 8]} /><meshStandardMaterial color="#cbd5e1" metalness={0.7} /></mesh>
+        <mesh position={[0, H + 8.6, 0]}><sphereGeometry args={[0.18, 16, 16]} /><meshStandardMaterial color="#d946ef" emissive="#d946ef" emissiveIntensity={2} toneMapped={false} /></mesh>
+        <Label position={[0, H + 10, 0]} center zIndexRange={[10, 0]}>
+          <div className="house-label">
+            <span className="name"><i style={{ background: "#d946ef" }} />Boardroom</span>
+            <div className="meta">Pod meetings over Central Park · click to enter</div>
+          </div>
+        </Label>
+      </group>
     </group>
   );
 }
