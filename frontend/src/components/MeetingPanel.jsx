@@ -61,7 +61,7 @@ export default function MeetingPanel({ onClose }) {
         {meeting && meeting.status === "running" && (
           <p className="muted" aria-live="polite"><span className="typing"><span /><span /><span /></span> Agents are debating. This takes 1-3 minutes.</p>
         )}
-        {meeting?.status === "failed" && <p className="down">Last meeting failed: {meeting.error}</p>}
+        {meeting?.status === "failed" && <p className="down">Last meeting failed {timeAgo(meeting.finished_at || meeting.started_at)}: {meeting.error}</p>}
         {meeting?.minutes_md ? (
           <div style={{ marginTop: 16 }}>
             <p className="faint" style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>

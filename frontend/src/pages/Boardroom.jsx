@@ -188,7 +188,7 @@ export default function Boardroom() {
         {controls}
         {loaded && !tts && <p className="faint" style={{ fontSize: 13 }}>Voices are off: set <span className="mono">ELEVENLABS_API_KEY</span> on the backend to hear the meeting. The transcript is below.</p>}
         {meeting?.status === "running" && <p className="muted" aria-live="polite"><span className="typing"><span /><span /><span /></span> The pod is debating. This takes 1-3 minutes.</p>}
-        {meeting?.status === "failed" && <p className="down">Last meeting failed: {meeting.error}</p>}
+        {meeting?.status === "failed" && <p className="down">Last meeting failed {timeAgo(meeting.finished_at || meeting.started_at)}: {meeting.error}</p>}
         {(error || playback.error) && <p className="down" role="alert">{error || playback.error}</p>}
       </section>
       {lines.length > 0 && (

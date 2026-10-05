@@ -159,6 +159,7 @@ def status(db: Session = Depends(get_db)):
         "last_analysis": _iso(last_job),
         "status": "ok" if db_ok else "degraded",
         "environment": config.ENVIRONMENT,
+        "version": config.VERSION,
         "database": "sqlite" if config.DATABASE_URL.startswith("sqlite") else "postgresql",
         "missing_config": config.missing_keys(),
         "voice": config.voice_status(),

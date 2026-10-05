@@ -31,6 +31,8 @@ def _database_url() -> str:
 
 
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+# Deployed commit (Railway sets RAILWAY_GIT_COMMIT_SHA), shown in /status so you can confirm a deploy landed.
+VERSION = (os.getenv("RAILWAY_GIT_COMMIT_SHA") or os.getenv("GIT_COMMIT") or "local")[:7]
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 # --- API keys -------------------------------------------------------------

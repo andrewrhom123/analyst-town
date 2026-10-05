@@ -10,7 +10,7 @@ import AgentDetail from "./pages/AgentDetail.jsx";
 import Boardroom from "./pages/Boardroom.jsx";
 import Home from "./pages/Home.jsx";
 
-function SettingsModal({ onClose }) {
+function SettingsModal({ onClose, version }) {
   const [key, setKey] = useState(getAccessKey());
   return (
     <div className="overlay" role="dialog" aria-modal="true" aria-label="Settings" onClick={onClose}>
@@ -27,7 +27,7 @@ function SettingsModal({ onClose }) {
           <label htmlFor="key">Access key</label>
           <input id="key" className="input" type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} />
         </div>
-        <p className="faint" style={{ fontSize: 13 }}>Backend: <span className="mono">{API_BASE}</span></p>
+        <p className="faint" style={{ fontSize: 13 }}>Backend: <span className="mono">{API_BASE}</span>{version && <> · version <span className="mono">{version}</span></>}</p>
         <button className="btn primary" onClick={() => { setAccessKey(key.trim()); onClose(); }}>Save</button>
       </div>
     </div>
@@ -84,7 +84,7 @@ export default function App() {
       </Routes>
 
       {modal === "help" && <InstructionsTab onClose={() => setModal(null)} />}
-      {modal === "settings" && <SettingsModal onClose={() => setModal(null)} />}
+      {modal === "settings" && <SettingsModal onClose={() => setModal(null)} version={status.data?.version} />}
       {modal === "meeting" && <MeetingPanel onClose={() => setModal(null)} />}
     </>
   );
