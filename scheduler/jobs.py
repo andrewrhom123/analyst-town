@@ -1,6 +1,6 @@
 """Event-driven scheduler (US/Eastern):
 
-  every 30 min, Mon-Fri 9:00-16:30  price_check     Finnhub quotes -> triggers (>5% move / level cross)   $0
+  every 30 min, Mon-Fri 9:00-16:30  price_check     Finnhub quotes -> SMS alerts (+/-5% today) + thesis triggers  $0
   Mon-Fri 8:00 and 17:00            filing_check    new 10-Q/10-K/earnings 8-K -> deep dive             $0
   daily 7:15                        news_refresh    NewsAPI headlines -> latest_events.md                $0
   Mon-Fri 16:30                     daily meeting   analysts challenge and revise theses               ~$1
@@ -31,6 +31,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from agents import llm
+from alerts.sms import check_price_alerts
 from agents.base_analyst import run_deep_dive
 from agents.coverage_files import ensure_files, refresh_files
 from agents.meeting import run_meeting
@@ -259,12 +260,19 @@ def process_queue() -> dict:
 def price_check() -> dict:
     contexts = [c for c in active_contexts() if c.price_symbol]
     quotes = poll_quotes(sorted({c.price_symbol for c in contexts}))
-    triggered = []
+    triggered, alerts = [], []
     for ctx in contexts:
         q = quotes.get(ctx.price_symbol)
         if not q:
             continue
         backfill_reference_price(ctx.ticker_id, q["price"])
+        th = current_thesis(ctx.ticker_id)
+        try:
+            alert = check_price_alerts(ctx, q, th["thesis"] if th else None)
+            if alert:
+                alerts.append(alert)
+        except Exception:  # an alert problem must never stop the price monitor
+            logger.exception("Price alert check for %s failed", ctx.symbol)
         reason = price_triggers(ctx, q["price"])
         if reason:
             with session_scope() as s:
@@ -274,8 +282,8 @@ def price_check() -> dict:
             elif enqueue("thesis_update", ctx.symbol, reason, reason.split(":")[0]):
                 triggered.append({"ticker": ctx.symbol, "reason": reason})
         refresh_files(ctx.symbol, ["trading_thesis.md", "latest_events.md", "current_price.json"])
-    logger.info("Price check: %d quotes, %d triggers", len(quotes), len(triggered))
-    return {"quotes": len(quotes), "triggered": triggered}
+    logger.info("Price check: %d quotes, %d triggers, %d SMS alerts", len(quotes), len(triggered), len(alerts))
+    return {"quotes": len(quotes), "triggered": triggered, "alerts": alerts}
 
 
 def filing_check() -> list[dict]:

@@ -20,6 +20,7 @@ from agents import llm
 from agents.base_analyst import build_track_record
 from agents.briefing import HELP, ask, briefing, parse_command
 from agents.dashboard import dashboard
+from alerts.sms import SmsNotConfigured, recent_alerts, send_sms
 from agents.coverage_files import FILENAMES, list_files, price_snapshot, read_file
 from agents.meeting import latest_minutes, run_meeting
 from agents.registry import CoverageError, add_analyst, analyst_info, get_context, list_coverage, reassign_ticker, update_ticker
@@ -159,6 +160,7 @@ def status(db: Session = Depends(get_db)):
         "environment": config.ENVIRONMENT,
         "database": "sqlite" if config.DATABASE_URL.startswith("sqlite") else "postgresql",
         "missing_config": config.missing_keys(),
+        "sms_alerts": {"enabled": config.SMS_ALERTS_ENABLED, "configured": config.sms_configured(), "threshold_pct": config.ALERT_MOVE_PCT},
         "models": {"deep_dive": config.DEEP_MODEL, "light": config.LIGHT_MODEL},
         "budget": {**(budget := llm.budget_status()), "buildout": {
             **budget["buildout"],
@@ -624,6 +626,33 @@ def post_bootstrap(body: BootstrapIn, background: BackgroundTasks):
     """One-time initial coverage: run every queued deep dive now under a raised cap (progress: GET /jobs)."""
     background.add_task(_bootstrap_task, body)
     return {"status": "started", "budget_usd": body.budget_usd, "poll": "/jobs?status=running", "costs": "/costs"}
+
+
+class TestSmsIn(BaseModel):
+    message: str | None = Field(default=None, max_length=480)
+
+
+@app.post("/admin/test-sms", dependencies=[Depends(require_key)])
+def post_test_sms(body: TestSmsIn | None = None):
+    """Send a test text to every ALERT_PHONE_NUMBERS entry to confirm Twilio is wired up."""
+    text = (body.message if body and body.message else None) or (
+        f"Analyst Town test alert: SMS price alerts are live. You'll get a text when a covered ticker moves "
+        f"{config.ALERT_MOVE_PCT:g}% or more in a day.")
+    try:
+        results = send_sms(text)
+    except SmsNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if not any(r["ok"] for r in results):
+        raise HTTPException(status_code=502, detail={"message": "Twilio rejected every send", "results": results})
+    return {"sent": sum(r["ok"] for r in results), "results": results}
+
+
+@app.get("/alerts")
+def get_alerts(limit: int = Query(50, ge=1, le=500)):
+    """Recent SMS price alerts (sent, failed or skipped), newest first."""
+    return {"enabled": config.SMS_ALERTS_ENABLED, "configured": config.sms_configured(),
+            "threshold_pct": config.ALERT_MOVE_PCT, "recipients": len(config.ALERT_PHONE_NUMBERS),
+            "alerts": recent_alerts(limit)}
 
 
 @app.post("/price-check", dependencies=[Depends(require_key)])

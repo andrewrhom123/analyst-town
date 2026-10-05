@@ -217,3 +217,21 @@ class ScheduledRunLock(Base):
 
     run_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SmsAlert(Base):
+    """One row per price alert (per ticker, per trading day, per 5% band), whether or not the text went out."""
+
+    __tablename__ = "sms_alerts"
+    __table_args__ = (UniqueConstraint("symbol", "alert_date", "band", name="uq_sms_alert_band"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    alert_date: Mapped[str] = mapped_column(String(10))  # US/Eastern trading day, YYYY-MM-DD
+    band: Mapped[int] = mapped_column(Integer)  # +1 = up 5%+, +2 = up 10%+, -1 = down 5%+, ...
+    change_pct: Mapped[float] = mapped_column(Float)
+    price: Mapped[float] = mapped_column(Float)
+    message: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20))  # sent | partial | failed | skipped
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)  # Twilio SIDs or error / skip reason
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

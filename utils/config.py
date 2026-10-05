@@ -116,6 +116,20 @@ def setup_logging() -> None:
     )
 
 
+# --- SMS price alerts (Twilio) ------------------------------------------------
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "")  # E.164, e.g. +15551234567 (or use a messaging service)
+TWILIO_MESSAGING_SERVICE_SID = os.getenv("TWILIO_MESSAGING_SERVICE_SID", "")
+ALERT_PHONE_NUMBERS = [n.strip() for n in os.getenv("ALERT_PHONE_NUMBERS", "").split(",") if n.strip()]
+SMS_ALERTS_ENABLED = _bool("SMS_ALERTS_ENABLED", True)
+ALERT_MOVE_PCT = _float("ALERT_MOVE_PCT", 5.0)  # daily move vs previous close that triggers a text
+
+
+def sms_configured() -> bool:
+    return bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and (TWILIO_FROM_NUMBER or TWILIO_MESSAGING_SERVICE_SID) and ALERT_PHONE_NUMBERS)
+
+
 def missing_keys() -> list[str]:
     """Names of required settings that are not configured."""
     required = {
