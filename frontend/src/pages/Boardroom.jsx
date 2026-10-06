@@ -1,8 +1,9 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api/client.js";
 import AudioPlayer from "../components/AudioPlayer.jsx";
 import Markdown from "../components/Markdown.jsx";
+import StrategySession from "../components/StrategySession.jsx";
 import VoiceInput from "../components/VoiceInput.jsx";
 import { timeAgo } from "../format.js";
 import { LAPTOP_QUERY, useMediaQuery, usePolling } from "../hooks.js";
@@ -146,8 +147,16 @@ export default function Boardroom() {
   const list = useRef();
   const roster = agents.data || [];
   const byKey = Object.fromEntries([...roster.map((a) => [a.key, a]), [CHAIR.key, CHAIR]]);
-  const current = lines[playback.index];
+  const [params, setParams] = useSearchParams();
+  const mode = params.get("mode") === "strategy" ? "strategy" : "meeting";
+  const [strategyLine, setStrategyLine] = useState(null);
+  const current = mode === "strategy" ? strategyLine : lines[playback.index];
   const speaker = player.status === "playing" ? player.agent : null;
+  const switchMode = (next) => {
+    if (next === mode) return;
+    playback.stop();
+    setParams(next === "strategy" ? { mode: "strategy" } : {}, { replace: true });
+  };
 
   useEffect(() => {
     document.title = "Boardroom · Analyst Town";
@@ -180,10 +189,17 @@ export default function Boardroom() {
         <div>
           <h1>Boardroom</h1>
           <div className="faint" style={{ fontSize: 12 }}>
-            {meeting ? `Meeting #${meeting.meeting_id ?? "…"} · ${meeting.status} · ${timeAgo(meeting.finished_at || meeting.started_at)}` : "No meetings yet"}
+            {mode === "strategy" ? "All-hands strategy session" : meeting ? `Meeting #${meeting.meeting_id ?? "…"} · ${meeting.status} · ${timeAgo(meeting.finished_at || meeting.started_at)}` : "No meetings yet"}
           </div>
         </div>
       </div>
+      <div className="board-tabs glass" role="tablist" aria-label="Boardroom mode">
+        <button role="tab" aria-selected={mode === "meeting"} onClick={() => switchMode("meeting")}>Pod meeting</button>
+        <button role="tab" aria-selected={mode === "strategy"} onClick={() => switchMode("strategy")}>All-hands strategy</button>
+      </div>
+      {mode === "strategy" ? (
+        roster.length > 0 ? <StrategySession agents={roster} onSpeaking={setStrategyLine} /> : <div className="skeleton" style={{ height: 160 }} />
+      ) : (<>
       <section className="section glass">
         {controls}
         {loaded && !tts && <p className="faint" style={{ fontSize: 13 }}>Voices are off: set <span className="mono">ELEVENLABS_API_KEY</span> on the backend to hear the meeting. The transcript is below.</p>}
@@ -220,6 +236,7 @@ export default function Boardroom() {
           <Markdown>{meeting.minutes_md}</Markdown>
         </section>
       )}
+      </>)}
     </div>
   );
 

@@ -235,3 +235,23 @@ class SmsAlert(Base):
     status: Mapped[str] = mapped_column(String(20))  # sent | partial | failed | skipped
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)  # Twilio SIDs or error / skip reason
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class StrategySession(Base):
+    """All-hands strategy session: macro context, the PM's strategy, the pod's replies, memo and sign-offs."""
+    __tablename__ = "strategy_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(20), default="thinking")  # thinking | awaiting_user | done | closed
+    phase: Mapped[str] = mapped_column(String(20), default="context")  # context | discussion | memo | done
+    progress: Mapped[str | None] = mapped_column(String(200), nullable=True)  # who is talking right now
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    strategy: Mapped[str] = mapped_column(Text, default="")  # the PM's opening strategy statement
+    messages: Mapped[list] = mapped_column(JSON, default=list)
+    market_context: Mapped[dict] = mapped_column(JSON, default=dict)
+    memo_title: Mapped[str] = mapped_column(String(300), default="")
+    memo_md: Mapped[str] = mapped_column(Text, default="")
+    signoffs: Mapped[list] = mapped_column(JSON, default=list)
+    revisions: Mapped[list] = mapped_column(JSON, default=list)

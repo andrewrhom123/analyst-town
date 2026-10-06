@@ -38,6 +38,7 @@ export default function InstructionsTab({ onClose }) {
           <li><b>▶</b> on any reply, or <b>Hear the pitch</b>: the analyst reads it aloud in their own voice (four distinct ElevenLabs voices, one per desk).</li>
           <li><b>🔊 Voice replies</b>: every answer is read aloud. <b>🎙 Hands-free</b>: talk, hear the answer, and the mic reopens so you can keep going.</li>
           <li><b>Boardroom</b> (town hall or the tower on the skyline): replay the latest meeting with each analyst speaking in turn, or ask the pod a question out loud.</li>
+          <li><b>All-hands strategy</b> (boardroom tab): Macro briefs the room on rates, the Fed, sentiment and beta; you set the strategy by voice or text; each analyst aligns or respectfully questions it with data; you answer; then the pod signs a strategy memo and updates every thesis to match. Every session is saved.</li>
           <li><b>🔈/🔊</b> (header): office sounds (keyboards clacking while agents work).</li>
           <li>Voice clips are cached, so replays are free; new speech is capped per day on the backend.</li>
         </ul>

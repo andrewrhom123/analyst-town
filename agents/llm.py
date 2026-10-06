@@ -6,7 +6,7 @@ Models: deep dives use DEEP_MODEL (Claude Opus 5.5); thesis updates, meetings an
 Budget rules (DAILY_BUDGET_USD, default $5, US/Eastern day):
   * autonomous work (deep dives, thesis updates) must leave MEETING_RESERVE_USD unspent until the daily
     meeting has run, plus ASK_RESERVE_USD for your questions; otherwise it is deferred to tomorrow
-  * the meeting may use the budget minus ASK_RESERVE_USD
+  * the meeting and all-hands strategy sessions may use the budget minus ASK_RESERVE_USD
   * /ask may use everything up to the budget
 """
 
@@ -169,7 +169,7 @@ def can_spend(kind: str, estimate_usd: float) -> tuple[bool, str]:
     budget = config.DAILY_BUDGET_USD
     if kind == "ask":
         limit = budget
-    elif kind == "meeting":
+    elif kind in ("meeting", "strategy"):
         limit = budget - config.ASK_RESERVE_USD
     else:
         reserve = config.ASK_RESERVE_USD + (0 if meeting_done_today() else config.MEETING_RESERVE_USD)

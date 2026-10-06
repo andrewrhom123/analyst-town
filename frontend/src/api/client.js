@@ -94,6 +94,13 @@ export const api = {
   meeting: () => request("/meeting", { method: "POST" }),
   latestMeeting: () => request("/meetings/latest"),
   meetingScript: () => request("/meetings/latest/script"),
+  strategyStart: () => request("/strategy", { method: "POST" }),
+  strategyLatest: () => request("/strategy/latest"),
+  strategySessions: () => request("/strategy?limit=10"),
+  strategy: (id) => request(`/strategy/${id}`),
+  strategySay: (id, text) => request(`/strategy/${id}/message`, { method: "POST", body: { text } }),
+  strategyFinalize: (id) => request(`/strategy/${id}/finalize`, { method: "POST" }),
+  strategyClose: (id) => request(`/strategy/${id}/close`, { method: "POST" }),
   voiceStatus: () => request("/voice/status"),
   /** MP3 Blob of `text` spoken in the agent's voice (agent = analyst key or "chair"). */
   speak: async (text, agent) => (await rawPost("/voice/tts", { json: { text, agent } })).blob(),

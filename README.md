@@ -106,7 +106,13 @@ Bridge, the Manhattan skyline) with one house per agent (color-coded, window glo
 thinking is) around a town hall; click a house to fly into the agent's office (robot at a three-monitor desk,
 one wall monitor per ticker, park-view windows; click a monitor to switch). The town hall, or the glass tower
 on Central Park South, opens the **boardroom** (`/boardroom`): the pod around a table overlooking the park,
-replaying the latest meeting speaker by speaker, plus "Ask the pod".
+replaying the latest meeting speaker by speaker, plus "Ask the pod" and the **all-hands strategy session**
+(`/boardroom?mode=strategy`): Macro opens with rates, the Fed, sentiment and beta; you set the strategy (typed or
+spoken); every analyst aligns or respectfully questions it with data; you answer the open questions; then the
+chair writes a strategy memo, each analyst signs off and re-states its theses under the new strategy (saved with
+trigger `strategy`). Every turn is stored (`strategy_sessions`; API: `POST /strategy`, `GET /strategy/{id}`,
+`POST /strategy/{id}/message`, `/finalize`, `/close`) and read aloud in each agent's voice. About $1 a session,
+charged to the daily budget like meetings.
 Phone/tablet: a swipeable card carousel and a full-screen office with ticker tabs, swipe between tickers,
 and a sticky chat dock that rides above the keyboard. three.js is only downloaded on laptop-size screens.
 

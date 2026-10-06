@@ -25,7 +25,7 @@ from agents.coverage_files import FILENAMES, list_files, price_snapshot, read_fi
 from agents.meeting import latest_minutes, meeting_in_progress, run_meeting
 from agents.registry import CoverageError, add_analyst, analyst_info, get_context, list_coverage, reassign_ticker, update_ticker
 from agents.thesis import current_thesis, thesis_history
-from agents import voice
+from agents import strategy, voice
 from data_sources.cache import get_cached
 from data_sources.price_feed import chart_series, latest_tick
 from database.db import get_db, init_db
@@ -452,6 +452,80 @@ def get_latest_meeting_script(db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No finished meetings yet")
     return {"meeting_id": m.id, "finished_at": _iso(m.finished_at),
             "lines": voice.meeting_script(m.id, m.transcript or {}, m.minutes_md)}
+
+
+# --- All-hands strategy session ----------------------------------------------------------------
+
+class StrategyMessageIn(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+def _strategy_call(fn, *args):
+    try:
+        return fn(*args)
+    except strategy.SessionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except llm.BudgetExceeded as exc:
+        raise HTTPException(status_code=429, detail=f"Over today's Claude budget: {exc}")
+
+
+def _strategy_or_404(session_id: int) -> dict:
+    session = strategy.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="No such strategy session")
+    return session
+
+
+@app.post("/strategy", status_code=202, dependencies=[Depends(require_key)])
+def post_strategy(background: BackgroundTasks):
+    """Open an all-hands strategy session; the macro strategist opens with market context. Poll GET /strategy/{id}."""
+    session_id = _strategy_call(strategy.start_session)
+    background.add_task(strategy.run_context, session_id)
+    return strategy.get_session(session_id)
+
+
+@app.get("/strategy")
+def get_strategy_sessions(limit: int = Query(20, ge=1, le=100)):
+    return strategy.list_sessions(limit)
+
+
+@app.get("/strategy/latest")
+def get_latest_strategy():
+    session = strategy.latest_session()
+    if session is None:
+        raise HTTPException(status_code=404, detail="No strategy sessions yet")
+    return session
+
+
+@app.get("/strategy/{session_id}")
+def get_strategy(session_id: int):
+    return _strategy_or_404(session_id)
+
+
+@app.post("/strategy/{session_id}/message", status_code=202, dependencies=[Depends(require_key)])
+def post_strategy_message(session_id: int, body: StrategyMessageIn, background: BackgroundTasks):
+    """The PM speaks: the first message sets the strategy, later ones answer the pod's questions."""
+    _strategy_or_404(session_id)
+    _strategy_call(strategy.post_message, session_id, body.text.strip())
+    background.add_task(strategy.run_replies, session_id)
+    return strategy.get_session(session_id)
+
+
+@app.post("/strategy/{session_id}/finalize", status_code=202, dependencies=[Depends(require_key)])
+def post_strategy_finalize(session_id: int, background: BackgroundTasks):
+    """Write the strategy memo; every analyst signs off and updates its theses under the new strategy."""
+    _strategy_or_404(session_id)
+    _strategy_call(strategy.begin_finalize, session_id)
+    background.add_task(strategy.run_finalize, session_id)
+    return strategy.get_session(session_id)
+
+
+@app.post("/strategy/{session_id}/close", dependencies=[Depends(require_key)])
+def post_strategy_close(session_id: int):
+    """End a session without a memo."""
+    _strategy_or_404(session_id)
+    _strategy_call(strategy.close_session, session_id)
+    return strategy.get_session(session_id)
 
 
 @app.get("/meetings")
