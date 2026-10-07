@@ -120,11 +120,17 @@ into every prompt along with the PM's active **research charter**. Theses carry 
 **Valuation: both ways, both markets, relative to peers.** Every public model values the company by DCF and by
 comps (EV/revenue, EV/EBITDA, SOTP) plus a **private-market** row (private peers' rounds and secondaries,
 precedent M&A / take-privates). Private companies get the same three lenses (public comps, private marks, DCF
-sanity check) and a verdict on their last mark. Inside every comps bucket the engine ranks names rich-to-cheap on
-EV/revenue vs a growth-adjusted fair multiple (EV/revenue regressed on revenue growth across the bucket; names >5x
-off the median are flagged as a different revenue basis, not mispricing). The town page's **Relative value** board
-(`GET /relative-value`, cache only) shows every bucket with the long-cheap / short-rich pair it implies; analysts
-see the same board in town halls and office conversations.
+sanity check) and a verdict on their last mark.
+
+Inside every comps bucket names are ranked rich-to-cheap on the bucket's multiple: EV/EBITDA or EV/Revenue, set by
+the industry's sell-side convention (`comps_basis` in coverage.yaml), else EV/EBITDA when most of the bucket earns
+10%+ EBITDA margins. Each name is compared with a growth-adjusted fair multiple (the multiple regressed on LTM revenue
+growth across the bucket; names >5x off the median are flagged as a different basis, not mispricing). Rows show LTM
+revenue growth, EBITDA growth and EBITDA margin from the last four quarters of SEC XBRL
+(`data_sources/fundamentals.py`: LTM = last FY + YTD - prior YTD; EBITDA = operating income + D&A + stock comp),
+refreshed daily in the background and cached a week; names without US filings fall back to the market feed
+(multiples marked *). The town page's **Relative value** board (`GET /relative-value`, cache only) shows every bucket
+with the long-cheap / short-rich pair it implies; analysts see the same board in town halls and office conversations.
 
 Live updates use short polling (2.5-4s) rather than Socket.io: it works on Railway/Vercel with no extra infrastructure.
 

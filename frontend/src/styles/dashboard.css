@@ -79,7 +79,11 @@
 .rv-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 13px; margin-bottom: 6px; }
 .rv-head .faint { font-size: 11px; }
 .rv-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
-.rv-rows li { display: grid; grid-template-columns: 74px 1fr 48px 92px; align-items: center; gap: 8px; font-size: 12px; }
+.rv-rows li { display: grid; grid-template-columns: 52px minmax(40px, 1fr) 42px 50px 40px 50px 46px; align-items: center; gap: 6px; font-size: 12px; }
+.rv-rows li.rv-colhead { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-3); line-height: 1.15; padding-bottom: 2px; }
+.rv-rows li.rv-colhead span, .rv-c { text-align: right; }
+.rv-c { font-size: 11px; color: var(--text-2); white-space: nowrap; }
+.rv-mult { color: var(--cyan-ink); font-weight: 700; }
 .rv-sym { background: none; border: 0; padding: 0; text-align: left; font-size: 12px; color: var(--text-2); cursor: default; }
 .rv-rows li.ours .rv-sym { font-weight: 800; color: var(--text); }
 .rv-sym:not(:disabled) { cursor: pointer; text-decoration: underline dotted; }
@@ -93,6 +97,5 @@
 .rv-rows li.rich .rv-num { color: var(--down); }
 .rv-rows li.cheap .rv-num { color: var(--up); }
 .rv-rows li.na .rv-num { color: var(--amber); }
-.rv-meta { font-size: 11px; white-space: nowrap; }
 .rv-pair { margin-top: 6px; font-size: 12.5px; }
 .rv-note { font-size: 11px; margin: 10px 0 0; }

@@ -406,6 +406,18 @@ def scheduled_meeting() -> None:
         logger.exception("Scheduled meeting failed")
 
 
+def ltm_refresh() -> None:
+    """Weekly-fresh LTM fundamentals (SEC XBRL) for every covered name and comps peer: feeds the relative value board."""
+    from data_sources.fundamentals import comps_universe, refresh_ltm, refresh_overviews
+
+    try:
+        universe = comps_universe()
+        refresh_overviews(universe)
+        refresh_ltm(universe)
+    except Exception:
+        logger.exception("LTM fundamentals refresh failed")
+
+
 def create_scheduler() -> BackgroundScheduler:
     sched = BackgroundScheduler(timezone=EASTERN)
     weekdays = "mon-fri"
@@ -413,6 +425,7 @@ def create_scheduler() -> BackgroundScheduler:
         ("price_check", price_check, CronTrigger(day_of_week=weekdays, hour="9-16", minute=f"*/{config.PRICE_CHECK_MINUTES}", timezone=EASTERN)),
         ("filing_check", filing_check, CronTrigger(day_of_week=weekdays, hour="8,17", minute=0, timezone=EASTERN)),
         ("news_refresh", news_refresh, CronTrigger(hour=7, minute=15, timezone=EASTERN)),
+        ("ltm_refresh", ltm_refresh, CronTrigger(hour=6, minute=30, timezone=EASTERN)),
         ("daily_meeting", scheduled_meeting, CronTrigger(day_of_week=weekdays, hour=config.MEETING_HOUR, minute=config.MEETING_MINUTE, timezone=EASTERN)),
         ("process_queue", process_queue, IntervalTrigger(minutes=1)),
         ("daily_reset", daily_reset, CronTrigger(hour=0, minute=5, timezone=EASTERN)),

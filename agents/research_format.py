@@ -174,19 +174,23 @@ def relative_value_md(outputs: dict) -> str:
     """Rich-to-cheap ranking per comps bucket (the subject in bold)."""
     blocks = []
     for b in outputs.get("relative_value") or []:
-        fit = b.get("fit")
-        head = (f"**{b['bucket']}**{' (primary)' if b.get('primary') else ''}: median {b['median_ev_to_revenue']:.1f}x EV/revenue"
-                if b.get("median_ev_to_revenue") else f"**{b['bucket']}**")
+        fit, name = b.get("fit"), b.get("multiple_name", "EV/Revenue")
+        head = f"**{b['bucket']}**{' (primary)' if b.get('primary') else ''} on **{name}**"
+        if b.get("multiple_reason"):
+            head += f" ({b['multiple_reason']})"
+        if b.get("median_multiple"):
+            head += f": median {b['median_multiple']:.1f}x"
         if fit:
-            head += f"; fair multiple = {fit['intercept']:.1f}x + {fit['slope']:.2f}x per point of growth (n={fit['n']})"
+            head += f"; fair = {fit['intercept']:.1f}x + {fit['slope']:.2f}x per point of LTM revenue growth (n={fit['n']})"
+        pct0 = lambda v: fmt_pct(v, 0) if v is not None else "n/a"  # noqa: E731
         rows = [[("**" + (r["symbol"] or "") + "**") if r["is_subject"] else (r["symbol"] or ""),
-                 f"{r['ev_to_revenue']:.1f}x" if r["ev_to_revenue"] else "n/a",
-                 fmt_pct(r["revenue_growth_pct"], 0) if r["revenue_growth_pct"] is not None else "n/a",
-                 f"{r['fair_ev_to_revenue']:.1f}x" if r["fair_ev_to_revenue"] else "n/a",
-                 fmt_pct(r["vs_fair_pct"] if r["vs_fair_pct"] is not None else r["vs_median_pct"], 0)
-                 if (r["vs_fair_pct"] if r["vs_fair_pct"] is not None else r["vs_median_pct"]) is not None else "n/a",
-                 r["verdict"] or "n/a"] for r in b["rows"]]
-        blocks += [head, _table(["Name", "EV/Rev", "Growth", "Fair EV/Rev", "Premium / discount", "Verdict"], rows)]
+                 f"{r['multiple']:.1f}x" if r.get("multiple") else "n/m",
+                 f"{r['fair_multiple']:.1f}x" if r.get("fair_multiple") else "n/a",
+                 pct0(r.get("gap_pct")), r["verdict"] or ("check basis" if r.get("flag") else "n/a"),
+                 pct0(r.get("revenue_growth_pct")), pct0(r.get("ebitda_growth_pct")), pct0(r.get("ebitda_margin_pct"))]
+                for r in b["rows"]]
+        blocks += [head, _table([f"Name", name, "Fair", "Premium / discount", "Verdict",
+                                 "Rev growth (LTM)", "EBITDA growth (LTM)", "EBITDA margin (LTM)"], rows)]
     pm = outputs.get("private_market") or {}
     if pm.get("marks"):
         blocks += ["**Private-market marks**", _table(

@@ -3,28 +3,43 @@ import { api } from "../api/client.js";
 import { fmtMoneyMm } from "../format.js";
 
 const pct = (v) => (v == null ? "n/a" : `${v > 0 ? "+" : ""}${v.toFixed(0)}%`);
-const mult = (v) => (v == null ? "n/a" : `${v.toFixed(1)}x`);
+const mult = (v) => (v == null ? "n/m" : `${v.toFixed(1)}x`);
+/** LTM growth / margin: "–" when not meaningful (negative base, no data); clamp huge off-tiny-base growth. */
+const ltm = (v) => (v == null ? "–" : v > 300 ? ">300%" : v < -99 ? "<-99%" : `${v.toFixed(0)}%`);
+const SHORT = { "EV/Revenue": "EV/Rev", "EV/EBITDA": "EV/EBITDA" };
 
-/** Rich-to-cheap rows for one bucket: a bar per name centred on fair value. */
-export function BucketRows({ rows, onTicker, subjectLabel }) {
+/**
+ * Rich-to-cheap rows for one bucket: a bar per name centred on fair value (left), then the bucket's multiple and
+ * LTM revenue growth, EBITDA growth and EBITDA margin (last four quarters) on the right.
+ */
+export function BucketRows({ rows, onTicker, multipleName = "EV/Revenue" }) {
   const max = Math.max(50, ...rows.map((r) => Math.abs(r.gap_pct ?? 0)));
   return (
     <ol className="rv-rows">
+      <li className="rv-colhead" aria-hidden="true">
+        <span /><span /><span className="rv-num">vs fair</span>
+        <span>{SHORT[multipleName] || multipleName}</span><span>Rev gr</span><span>EBITDA gr</span><span>EBITDA mgn</span>
+      </li>
       {rows.map((r) => {
         const gap = r.gap_pct;
         const w = gap == null ? 0 : Math.min(50, (Math.abs(gap) / max) * 50);
         return (
           <li key={r.symbol} className={`${r.verdict || "na"} ${r.is_subject || r.covered ? "ours" : ""}`}
-            title={r.flag || `${r.symbol}: ${mult(r.ev_to_revenue)} EV/revenue, growth ${pct(r.revenue_growth_pct)}, fair ${mult(r.fair_ev_to_revenue)}`}>
+            title={r.flag || `${r.symbol}: ${mult(r.multiple ?? r.ev_to_revenue)} ${multipleName}, fair ${mult(r.fair_multiple ?? r.fair_ev_to_revenue)}${r.period ? ` · ${r.period}` : ""}`}>
             <button type="button" className="rv-sym mono" onClick={() => onTicker?.(r.symbol)} disabled={!onTicker || !(r.covered || r.is_subject)}>
-              {r.is_subject ? subjectLabel || r.symbol : r.symbol}
+              {r.is_subject ? `▸ ${r.symbol}` : r.symbol}
             </button>
             <span className="rv-bar" aria-hidden="true">
               {gap != null && <i style={{ width: `${w}%`, [gap >= 0 ? "left" : "right"]: "50%" }} />}
               <b className="rv-mid" />
             </span>
             <span className="rv-num mono">{r.flag ? "basis?" : pct(gap)}</span>
-            <span className="rv-meta faint mono">{mult(r.ev_to_revenue)} · {r.revenue_growth_pct == null ? "–" : `${r.revenue_growth_pct.toFixed(0)}% gr`}</span>
+            <span className="rv-c mono" title={(r.feed_multiples || []).includes(r.multiple_key) ? "From the market feed's TTM ratio (LTM EBITDA/revenue not available from filings)" : r.period || undefined}>
+              {mult(r.multiple ?? r.ev_to_revenue)}{(r.feed_multiples || []).includes(r.multiple_key) ? "*" : ""}
+            </span>
+            <span className="rv-c mono">{ltm(r.revenue_growth_pct)}</span>
+            <span className="rv-c mono">{ltm(r.ebitda_growth_pct)}</span>
+            <span className="rv-c mono">{ltm(r.ebitda_margin_pct)}</span>
           </li>
         );
       })}
@@ -59,9 +74,11 @@ export function RelativeValueBoard({ onTicker, limit = 6 }) {
             <div key={b.bucket} className="rv-bucket">
               <div className="rv-head">
                 <b>{b.bucket}</b>
-                <span className="faint">{b.fit ? `fair = ${b.fit.intercept.toFixed(1)}x + ${b.fit.slope.toFixed(2)}x/pt growth` : `median ${mult(b.median_ev_to_revenue)}`}</span>
+                <span className="faint" title={b.multiple_reason}>
+                  <b className="rv-mult">{b.multiple_name}</b> · {b.fit ? `fair = ${b.fit.intercept.toFixed(1)}x + ${b.fit.slope.toFixed(2)}x/pt rev growth` : `median ${mult(b.median_multiple)}`}
+                </span>
               </div>
-              <BucketRows rows={b.rows.filter((r) => r.verdict || r.flag)} onTicker={onTicker} />
+              <BucketRows rows={b.rows.filter((r) => r.verdict || r.flag)} onTicker={onTicker} multipleName={b.multiple_name} />
               {b.pair_idea && (
                 <div className="rv-pair">Pair: <b className="up">long {b.pair_idea.long}</b> / <b className="down">short {b.pair_idea.short}</b>
                   <span className="faint"> · {b.pair_idea.spread_pct.toFixed(0)} pt valuation gap</span></div>
@@ -71,7 +88,12 @@ export function RelativeValueBoard({ onTicker, limit = 6 }) {
           {buckets.length > limit && (
             <button type="button" className="btn small" onClick={() => setShowAll(!showAll)}>{showAll ? "Show fewer" : `All ${buckets.length} buckets`}</button>
           )}
-          <p className="faint rv-note">LTM EV/revenue. Fair multiple regresses EV/revenue on growth across each bucket; ±15% = in line. "basis?" = revenue basis differs (e.g. gross vs net), excluded.</p>
+          <p className="faint rv-note">
+            Each bucket uses its industry's multiple (EV/EBITDA or EV/Revenue): current EV over LTM figures from the last four
+            quarters of SEC filings (market-feed TTM where unavailable). EBITDA = operating income + D&amp;A + stock comp.
+            Fair multiple = the multiple regressed on LTM revenue growth across the bucket; ±15% = in line. "basis?" = not
+            comparable (e.g. gross vs net revenue). "–" = not meaningful or no data. * = multiple from the market feed.
+          </p>
         </>
       )}
     </section>
@@ -85,16 +107,17 @@ export function ModelRelativeValue({ relativeValue = [], privateMarket }) {
   return (
     <section className="section glass">
       <h3>Relative value vs peers</h3>
+      <p className="faint" style={{ fontSize: 12, margin: "0 0 8px" }}>This name uses current-year model figures; peers use LTM (last four quarters).</p>
       {relativeValue.map((b) => (
         <div key={b.bucket} className="rv-bucket">
           <div className="rv-head">
-            <b>{b.bucket}{b.primary ? " (primary)" : ""}</b>
+            <b>{b.bucket}{b.primary ? " (primary)" : ""} · <span className="rv-mult" title={b.multiple_reason}>{b.multiple_name || "EV/Revenue"}</span></b>
             <span className="faint">
               {b.subject?.verdict ? `this name: ${b.subject.verdict} (${pct(b.subject.gap_pct)} vs ${b.subject.basis})` : b.subject?.flag || ""}
             </span>
           </div>
           {b.rows.filter((r) => r.verdict).length >= 2
-            ? <BucketRows rows={b.rows.filter((r) => r.ev_to_revenue != null || r.is_subject)} subjectLabel="This name" />
+            ? <BucketRows rows={b.rows.filter((r) => (r.multiple ?? r.ev_to_revenue) != null || r.flag || r.is_subject)} multipleName={b.multiple_name} />
             : <p className="faint" style={{ fontSize: 12, margin: 0 }}>Not enough peer multiples yet to rank this bucket.</p>}
         </div>
       ))}

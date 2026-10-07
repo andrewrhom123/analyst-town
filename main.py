@@ -67,6 +67,10 @@ async def lifespan(app: FastAPI):
     if not config.API_ACCESS_KEY:
         logger.warning("API_ACCESS_KEY is not set: endpoints that spend Claude credits are unprotected")
     if config.ENABLE_SCHEDULER:
+        # fill the LTM fundamentals cache in the background (only stale names are fetched; no-op when fresh)
+        import threading
+        from scheduler.jobs import ltm_refresh
+        threading.Thread(target=ltm_refresh, name="ltm-refresh", daemon=True).start()
         scheduler = create_scheduler()
         scheduler.start()
         logger.info("Scheduler started: %s", scheduler_status(scheduler)["jobs"])

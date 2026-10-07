@@ -14,6 +14,32 @@
 #   price_symbol  quote symbol if different from symbol (e.g. DXY -> UUP proxy)
 #   news_query / news_keywords / competitors / comps_buckets / focus_notes (optional)
 
+# Valuation multiple per comps bucket, following how the sell side covers each industry. Buckets not listed
+# here pick automatically: EV/EBITDA when 60%+ of the bucket earns a 10%+ LTM EBITDA margin, else EV/Revenue.
+comps_basis:
+  Online Sports Betting & iGaming: ev_to_ebitda
+  Online Travel: ev_to_ebitda
+  Delivery & Mobility Marketplaces: ev_to_ebitda
+  Payments: ev_to_ebitda
+  Data & Index Providers: ev_to_ebitda
+  Supply & Demand-Side Platforms: ev_to_ebitda
+  Independent Ad Tech: ev_to_ebitda
+  Walled Gardens: ev_to_ebitda
+  Mobile & Performance: ev_to_ebitda
+  Digital Advertising: ev_to_ebitda
+  Hyperscalers: ev_to_ebitda
+  Semiconductors: ev_to_ebitda
+  AI Semiconductors: ev_to_ebitda
+  Market Infrastructure: ev_to_ebitda
+  Legacy Market Infrastructure: ev_to_ebitda
+  Prediction Markets & Exchanges: ev_to_ebitda
+  Registrar & Issuer Services: ev_to_ebitda
+  Travel & Expense / Spend Management: ev_to_revenue
+  AI & Data Software: ev_to_revenue
+  Stablecoin Issuer: ev_to_revenue
+  Tokenization Infrastructure: ev_to_revenue
+  Bitcoin Miners: ev_to_revenue
+
 analysts:
   - key: macro
     name: Macro Strategist

@@ -268,6 +268,17 @@ def get_peer_multiples(buckets: dict[str, list[str]]) -> dict[str, list[dict]]:
                 overview = get_cached("market_overview", sym, None)  # stale beats nothing
             rows.append(_peer_row(sym, overview))
         result[bucket] = rows
+    # LTM revenue / EBITDA growth and EBITDA margin from SEC XBRL (cached a week), plus LTM-based multiples
+    from data_sources.fundamentals import peer_metrics, refresh_ltm
+    try:
+        refresh_ltm([r["symbol"] for rows in result.values() for r in rows])
+    except Exception as exc:
+        logger.warning("LTM refresh for comps failed: %s", exc)
+    for rows in result.values():
+        for r in rows:
+            m = peer_metrics(r["symbol"])
+            r.update({k: m[k] for k in ("ev_to_revenue", "ev_to_ebitda", "revenue_growth_pct", "ebitda_growth_pct",
+                                        "ebitda_margin_pct", "period") if m.get(k) is not None})
     return result
 
 

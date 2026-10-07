@@ -470,7 +470,8 @@ def compute_model(m: ModelInputs, comps: dict | None = None, valuation_date: dat
         "probability_weighted_price": weighted,
         "valuation_range": valuation_range,
     }
-    outputs["relative_value"] = relative_value(outputs, symbol)
+    from agents.registry import comps_basis_overrides  # local import: the engine stays importable on its own
+    outputs["relative_value"] = relative_value(outputs, symbol, basis_overrides=comps_basis_overrides())
     return outputs
 
 
@@ -499,69 +500,101 @@ def _fit_multiple_on_growth(points: list[tuple[float, float]]) -> dict | None:
     return {"intercept": intercept, "slope": slope, "n": n, "r2": 1 - ss_res / ss_tot if ss_tot else None}
 
 
-def score_bucket(names: list[dict]) -> dict:
-    """Rank names (dicts with symbol, ev_to_revenue, revenue_growth_pct, optional is_subject) rich-to-cheap:
-    EV/revenue vs the bucket median (subject excluded) and vs a growth-adjusted fair multiple fitted across the bucket."""
-    raw_median = _median(n.get("ev_to_revenue") for n in names if not n.get("is_subject"))
+MULTIPLES = {"ev_to_revenue": "EV/Revenue", "ev_to_ebitda": "EV/EBITDA"}
+PROFITABLE_MARGIN_PCT = 10.0  # auto basis: EV/EBITDA when most of the bucket earns at least this LTM EBITDA margin
+ROW_FIELDS = ("ev_to_revenue", "ev_to_ebitda", "revenue_growth_pct", "ebitda_growth_pct", "ebitda_margin_pct", "feed_multiples", "period")
+
+
+def choose_basis(names: list[dict], override: str | None = None) -> tuple[str, str]:
+    """(multiple, why): the configured sell-side convention for the bucket, else EV/EBITDA when 60%+ of names with
+    margin data earn a 10%+ LTM EBITDA margin (and at least 3 have positive EBITDA multiples), else EV/Revenue."""
+    if override in MULTIPLES:
+        return override, "industry convention"
+    margins = [n["ebitda_margin_pct"] for n in names if n.get("ebitda_margin_pct") is not None]
+    profitable = sum(m >= PROFITABLE_MARGIN_PCT for m in margins)
+    priced = sum(1 for n in names if n.get("ev_to_ebitda"))
+    if len(margins) >= 2 and profitable / len(margins) >= 0.6 and priced >= 2:
+        return "ev_to_ebitda", f"{profitable} of {len(margins)} names earn {PROFITABLE_MARGIN_PCT:.0f}%+ EBITDA margins"
+    return "ev_to_revenue", ("most names are not yet solidly EBITDA-profitable" if margins else "no EBITDA data")
+
+
+def score_bucket(names: list[dict], basis: str = "ev_to_revenue") -> dict:
+    """Rank names (dicts with symbol, ev_to_revenue, ev_to_ebitda, revenue_growth_pct, ebitda_growth_pct,
+    ebitda_margin_pct, optional is_subject) rich-to-cheap on `basis`: the multiple vs the bucket median (subject
+    excluded) and vs a growth-adjusted fair multiple (the multiple regressed on revenue growth across the bucket)."""
+    mult = lambda n: n.get(basis)  # noqa: E731
+    raw_median = _median(mult(n) for n in names if not n.get("is_subject"))
 
     def outlier(n):
-        evr = n.get("ev_to_revenue")
-        return bool(evr and raw_median and (evr > raw_median * OUTLIER_FACTOR or evr < raw_median / OUTLIER_FACTOR))
+        x = mult(n)
+        return bool(x and raw_median and (x > raw_median * OUTLIER_FACTOR or x < raw_median / OUTLIER_FACTOR))
 
     clean = [n for n in names if not outlier(n)]
-    fit = _fit_multiple_on_growth([(n["revenue_growth_pct"], n["ev_to_revenue"]) for n in clean
-                                   if n.get("revenue_growth_pct") is not None and n.get("ev_to_revenue")])
-    median = _median(n.get("ev_to_revenue") for n in clean if not n.get("is_subject"))
+    fit = _fit_multiple_on_growth([(n["revenue_growth_pct"], mult(n)) for n in clean
+                                   if n.get("revenue_growth_pct") is not None and mult(n)])
+    median = _median(mult(n) for n in clean if not n.get("is_subject"))
     rows = []
     for n in names:
-        evr, g = n.get("ev_to_revenue"), n.get("revenue_growth_pct")
+        x, g = mult(n), n.get("revenue_growth_pct")
+        base = {**n, "symbol": n.get("symbol"), "name": n.get("name"), "is_subject": bool(n.get("is_subject")),
+                **{k: n.get(k) for k in ROW_FIELDS}, "multiple": x, "multiple_key": basis, "multiple_name": MULTIPLES[basis]}
+        flag = None
         if outlier(n):
-            rows.append({**{k: v for k, v in n.items()}, "symbol": n.get("symbol"), "name": n.get("name"),
-                         "is_subject": bool(n.get("is_subject")), "ev_to_revenue": evr, "ev_to_ebitda": n.get("ev_to_ebitda"),
-                         "revenue_growth_pct": g, "growth_adjusted_ev_to_revenue": None, "fair_ev_to_revenue": None,
-                         "vs_median_pct": None, "vs_fair_pct": None, "gap_pct": None, "basis": None, "verdict": None,
-                         "flag": f"{evr:.1f}x is >{OUTLIER_FACTOR:.0f}x away from the bucket median: check revenue basis (gross vs net)"})
+            flag = f"{x:.1f}x is >{OUTLIER_FACTOR:.0f}x away from the bucket median: check revenue/EBITDA basis"
+        elif not x and basis == "ev_to_ebitda" and n.get("ebitda_margin_pct") is not None and n["ebitda_margin_pct"] <= 0:
+            flag = "n/m: EBITDA is negative"
+        if flag:
+            rows.append({**base, "growth_adjusted_multiple": None, "fair_multiple": None, "vs_median_pct": None,
+                         "vs_fair_pct": None, "gap_pct": None, "basis": None, "verdict": None, "flag": flag})
             continue
         fair = fit["intercept"] + fit["slope"] * g if fit and g is not None else None
         fair = fair if fair and fair > 0 else None
-        vs_median = (evr / median - 1) * 100 if evr and median else None
-        vs_fair = (evr / fair - 1) * 100 if evr and fair else None
+        vs_median = (x / median - 1) * 100 if x and median else None
+        vs_fair = (x / fair - 1) * 100 if x and fair else None
         gap = vs_fair if vs_fair is not None else vs_median
         verdict = None if gap is None else "rich" if gap > RICH_CHEAP_BAND_PCT else "cheap" if gap < -RICH_CHEAP_BAND_PCT else "in line"
-        rows.append({**{k: v for k, v in n.items() if k not in ("ev_to_revenue", "revenue_growth_pct")},
-                     "symbol": n.get("symbol"), "name": n.get("name"), "is_subject": bool(n.get("is_subject")),
-                     "ev_to_revenue": evr, "ev_to_ebitda": n.get("ev_to_ebitda"), "revenue_growth_pct": g,
-                     "growth_adjusted_ev_to_revenue": evr / g if evr and g and g > 0 else None,
-                     "fair_ev_to_revenue": fair, "vs_median_pct": vs_median, "vs_fair_pct": vs_fair, "gap_pct": gap,
+        rows.append({**base, "growth_adjusted_multiple": x / g if x and g and g > 0 else None, "fair_multiple": fair,
+                     "vs_median_pct": vs_median, "vs_fair_pct": vs_fair, "gap_pct": gap,
                      "basis": "growth-adjusted" if vs_fair is not None else "bucket median" if vs_median is not None else None,
                      "verdict": verdict})
     ranked = sorted([r for r in rows if r["verdict"]], key=lambda r: -r["gap_pct"])
     for i, r in enumerate(ranked, 1):
         r["rank_rich_to_cheap"] = i
-    return {"median_ev_to_revenue": median, "fit": fit, "rows": ranked + [r for r in rows if not r["verdict"]]}
+    return {"multiple": basis, "multiple_name": MULTIPLES[basis], "median_multiple": median,
+            "median_ev_to_revenue": median if basis == "ev_to_revenue" else _median(n.get("ev_to_revenue") for n in names if not n.get("is_subject")),
+            "fit": fit, "rows": ranked + [r for r in rows if not r["verdict"]]}
 
 
-def relative_value(outputs: dict, symbol: str, peer_growth: dict | None = None) -> list[dict]:
-    """Per comps bucket of one model: the subject (current-year EV/revenue and growth from the model) ranked
-    against its peers (LTM). `peer_growth` fills peers' growth when the stored comps predate growth data."""
+def relative_value(outputs: dict, symbol: str, peer_data: dict | None = None, basis_overrides: dict | None = None) -> list[dict]:
+    """Per comps bucket of one model: the subject (current-year multiples, growth and margin from the model) ranked
+    against its peers. `peer_data` ({symbol: {ev_to_revenue, ev_to_ebitda, revenue_growth_pct, ebitda_growth_pct,
+    ebitda_margin_pct}}) refreshes peers with LTM fundamentals; `basis_overrides` maps bucket -> multiple."""
     cap = outputs.get("capitalization") or {}
-    cur = next((r for r in outputs.get("rows", []) if r.get("year") == cap.get("current_year")), {})
-    subject = {"symbol": symbol, "name": "this company", "is_subject": True,
+    rows_by_year = {r.get("year"): r for r in outputs.get("rows", [])}
+    years = [r.get("year") for r in outputs.get("rows", [])]
+    cy = cap.get("current_year")
+    cur = rows_by_year.get(cy, {})
+    prev = rows_by_year.get(years[years.index(cy) - 1]) if cy in years and years.index(cy) > 0 else None
+    e_now, e_prev = cur.get("adj_ebitda"), (prev or {}).get("adj_ebitda")
+    subject = {"symbol": symbol, "name": "this company", "is_subject": True, "period": f"{cy} (model)",
                "ev_to_revenue": cap.get("ev_to_revenue_current_year"), "ev_to_ebitda": cap.get("ev_to_ebitda_current_year"),
-               "revenue_growth_pct": cur.get("revenue_growth_pct")}
+               "revenue_growth_pct": cur.get("revenue_growth_pct"),
+               "ebitda_growth_pct": (e_now / e_prev - 1) * 100 if e_now is not None and e_prev and e_prev > 0 else None,
+               "ebitda_margin_pct": cur.get("adj_ebitda_margin_pct")}
     result = []
     for bucket, b in ((outputs.get("comps") or {}).get("buckets") or {}).items():
         names = [subject]
         for p in b.get("peers", []):
             if p.get("symbol") == symbol:
                 continue
-            p = {k: p.get(k) for k in ("symbol", "name", "ev_to_revenue", "ev_to_ebitda", "revenue_growth_pct")}
-            if p.get("revenue_growth_pct") is None and peer_growth:
-                p["revenue_growth_pct"] = peer_growth.get(p["symbol"])
-            names.append(p)
-        scored = score_bucket(names)
+            row = {"symbol": p.get("symbol"), "name": p.get("name"), **{k: p.get(k) for k in ROW_FIELDS}}
+            fresh = (peer_data or {}).get(p.get("symbol")) or {}
+            row.update({k: v for k, v in fresh.items() if v is not None})
+            names.append(row)
+        basis, why = choose_basis(names, (basis_overrides or {}).get(bucket))
+        scored = score_bucket(names, basis)
         result.append({"bucket": bucket, "primary": bucket == (outputs.get("comps") or {}).get("primary_bucket"), **scored,
-                       "subject": next((r for r in scored["rows"] if r["is_subject"]), None)})
+                       "multiple_reason": why, "subject": next((r for r in scored["rows"] if r["is_subject"]), None)})
     return result
 
 
@@ -578,7 +611,7 @@ def summary_for_research(outputs: dict) -> dict:
     summary["valuation_range"] = (
         f"${vr['low_equity_value'] / 1000:,.1f}-{vr['high_equity_value'] / 1000:,.1f}B" if vr else "n/a"
     )
-    rel = [f"{b['bucket']}: {b['subject']['verdict']} ({b['subject']['vs_fair_pct'] if b['subject']['vs_fair_pct'] is not None else b['subject']['vs_median_pct']:+.0f}% vs "
+    rel = [f"{b['bucket']} ({b.get('multiple_name', 'EV/Revenue')}): {b['subject']['verdict']} ({b['subject']['gap_pct']:+.0f}% vs "
            f"{'growth-adjusted fair' if b['subject']['vs_fair_pct'] is not None else 'median'})"
            for b in outputs.get("relative_value") or [] if b.get("subject") and b["subject"].get("verdict")]
     if rel:
@@ -608,11 +641,12 @@ def describe_for_claude(outputs: dict) -> dict:
         "comps_bucket_medians": {name: {"ev_to_revenue": b["median_ev_to_revenue"], "ev_to_ebitda": b["median_ev_to_ebitda"]}
                                  for name, b in outputs["comps"]["buckets"].items()},
         "private_market": {k: (r(v, 2) if not isinstance(v, list) else v) for k, v in (outputs.get("private_market") or {}).items()},
-        "relative_value": [{"bucket": b["bucket"], "median_ev_to_revenue": r(b["median_ev_to_revenue"], 2),
+        "relative_value": [{"bucket": b["bucket"], "multiple": b.get("multiple_name"), "why_this_multiple": b.get("multiple_reason"),
+                            "median_multiple": r(b.get("median_multiple"), 2),
                             "fit": {k: r(v, 3) for k, v in (b["fit"] or {}).items()} or None,
                             "rank_rich_to_cheap": [{k: r(v, 1) for k, v in row.items() if k in (
-                                "symbol", "ev_to_revenue", "revenue_growth_pct", "fair_ev_to_revenue", "vs_median_pct",
-                                "vs_fair_pct", "verdict", "is_subject")} for row in b["rows"]]}
+                                "symbol", "multiple", "revenue_growth_pct", "ebitda_growth_pct", "ebitda_margin_pct",
+                                "fair_multiple", "gap_pct", "verdict", "is_subject", "flag")} for row in b["rows"]]}
                            for b in outputs.get("relative_value") or []],
         "research_json_financial_model": summary_for_research(outputs),
     }

@@ -265,3 +265,11 @@ def list_coverage(include_inactive: bool = False) -> list[dict]:
                             for t in a.tickers if t.active or include_inactive],
             })
         return out
+
+
+def comps_basis_overrides() -> dict[str, str]:
+    """Bucket -> multiple ('ev_to_revenue' | 'ev_to_ebitda') from coverage.yaml's comps_basis (industry convention)."""
+    try:
+        return (yaml.safe_load(COVERAGE_FILE.read_text(encoding="utf-8")) or {}).get("comps_basis") or {}
+    except Exception:
+        return {}
