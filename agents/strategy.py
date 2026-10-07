@@ -30,6 +30,7 @@ from agents import llm
 from agents.coverage_files import refresh_files
 from agents.meeting import PitchOut, Revision, _board, headlines, speaking_order
 from agents.philosophy import framework_block
+from agents.relative_value import desk_relative_value
 from agents.registry import FOCUS_METRICS, get_context
 from agents.thesis import save_thesis
 from data_sources.cache import get_cached
@@ -368,7 +369,8 @@ def run_research_replies(session_id: int) -> None:
             _update(session_id, progress=f"{a['analyst']} is answering")
             messages = get_session(session_id)["messages"]
             mine = {sym: {k: t.get(k) for k in ("name", "price", "beta", "thesis")} for sym, t in a["tickers"].items()}
-            payload = {"your_names": mine, "headlines": headlines(list(a["tickers"]), per_ticker=3)}
+            payload = {"your_names": mine, "headlines": headlines(list(a["tickers"]), per_ticker=3),
+                       "relative_value": desk_relative_value(list(a["tickers"]))}
             out, _ = llm.parse_call(
                 "strategy", ResearchReply, _research_system(a),
                 [{"role": "user", "content": f"<your_book>\n{_dump(payload)}\n</your_book>\n"

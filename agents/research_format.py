@@ -49,6 +49,27 @@ class FocusMetrics(BaseModel):
     competitive_threats: str
 
 
+class ImpliedValue(BaseModel):
+    method: Literal["public_comps", "private_marks", "dcf_sanity_check"]
+    multiple: float | None = Field(description="Multiple applied (e.g. EV/revenue), or null for the DCF check")
+    metric: str = Field(description="What it is applied to, e.g. 'est. 2026 revenue $1.2B'")
+    implied_value_mm: float | None = Field(description="Implied enterprise value, $mm")
+    basis: str = Field(description="Which peers / marks / assumptions, with sources")
+
+
+class PrivateCompanyValuation(BaseModel):
+    last_mark_mm: float | None = Field(description="Latest private valuation (round, secondary or deal), $mm")
+    last_mark_date: str
+    last_mark_source: str = Field(description="Headline/filing in the data, or 'general knowledge, unverified'")
+    estimated_revenue_mm: float | None = Field(description="Best estimate of current revenue or run-rate, $mm")
+    revenue_basis: str
+    methods: list[ImpliedValue] = Field(description="Value it all three ways: public comps, private marks, DCF sanity check")
+    verdict: Literal["overpriced", "fair", "underpriced", "not enough data"] = Field(
+        description="The last private mark vs what public comps and the DCF say")
+    read_through: str = Field(description="What this private mark means for the public names in the same bucket: who looks rich "
+                                          "or cheap against it, and any pair it suggests")
+
+
 class ResearchWriteup(BaseModel):
     title: str = Field(description="Memo headline, e.g. 'Bullish (BLSH): Narrative Trade'")
     subtitle: str = Field(description="One sentence that frames the argument")
@@ -75,6 +96,12 @@ class ResearchWriteup(BaseModel):
     catalysts: list[str] = Field(description="What I'm watching: upcoming events/metrics with timing")
     bottom_line: str = Field(description="Closing paragraph in the first person: where this leaves me and what I'd do")
     macro_scenarios: list[MacroScenario] = Field(description="Tickers without a company model (index/private): 2-4 regimes. Otherwise an empty list")
+    relative_value: str = Field(description="Where this name sits in each comps bucket: rich or cheap vs peers on raw and "
+                                            "growth-adjusted multiples (use the computed relative_value ranking when there is a "
+                                            "model), and which peer is the natural pair against it")
+    private_valuation: PrivateCompanyValuation | None = Field(
+        description="PRIVATE companies only: value via public comps, private marks and a DCF sanity check. Null for public "
+                    "companies (their model does this) and for indices")
     data_gaps: list[str]
     company_background: CompanyBackground
     trading_thesis: TradingThesisOut = Field(
@@ -143,6 +170,32 @@ def valuation_tables_md(outputs: dict) -> str:
     return "\n".join(lines)
 
 
+def relative_value_md(outputs: dict) -> str:
+    """Rich-to-cheap ranking per comps bucket (the subject in bold)."""
+    blocks = []
+    for b in outputs.get("relative_value") or []:
+        fit = b.get("fit")
+        head = (f"**{b['bucket']}**{' (primary)' if b.get('primary') else ''}: median {b['median_ev_to_revenue']:.1f}x EV/revenue"
+                if b.get("median_ev_to_revenue") else f"**{b['bucket']}**")
+        if fit:
+            head += f"; fair multiple = {fit['intercept']:.1f}x + {fit['slope']:.2f}x per point of growth (n={fit['n']})"
+        rows = [[("**" + (r["symbol"] or "") + "**") if r["is_subject"] else (r["symbol"] or ""),
+                 f"{r['ev_to_revenue']:.1f}x" if r["ev_to_revenue"] else "n/a",
+                 fmt_pct(r["revenue_growth_pct"], 0) if r["revenue_growth_pct"] is not None else "n/a",
+                 f"{r['fair_ev_to_revenue']:.1f}x" if r["fair_ev_to_revenue"] else "n/a",
+                 fmt_pct(r["vs_fair_pct"] if r["vs_fair_pct"] is not None else r["vs_median_pct"], 0)
+                 if (r["vs_fair_pct"] if r["vs_fair_pct"] is not None else r["vs_median_pct"]) is not None else "n/a",
+                 r["verdict"] or "n/a"] for r in b["rows"]]
+        blocks += [head, _table(["Name", "EV/Rev", "Growth", "Fair EV/Rev", "Premium / discount", "Verdict"], rows)]
+    pm = outputs.get("private_market") or {}
+    if pm.get("marks"):
+        blocks += ["**Private-market marks**", _table(
+            ["Mark", "Type", "Date", "Valuation", "Implied EV/Rev", "Source"],
+            [[k["name"], k["kind"].replace("_", " "), k["date"], fmt_money_mm(k["valuation_mm"]),
+              f"{k['implied_ev_to_revenue']:.1f}x" if k.get("implied_ev_to_revenue") else "n/a", k["source"]] for k in pm["marks"]])]
+    return "\n\n".join(blocks)
+
+
 def assemble_memo(w: ResearchWriteup, agent_name: str, agent_type: str, run_date: str, outputs: dict | None) -> str:
     parts = [
         f"# {w.title}",
@@ -164,12 +217,25 @@ def assemble_memo(w: ResearchWriteup, agent_name: str, agent_type: str, run_date
     parts += [f"**{label}.** {getattr(w.focus_metrics, key)}" for key, label in FOCUS_LABELS.items()]
     if outputs:
         parts += ["## The model", model_table_md(outputs), "## Valuation", valuation_tables_md(outputs), w.valuation_discussion]
+        parts += ["## Relative value vs peers", relative_value_md(outputs), w.relative_value]
+    elif w.private_valuation:
+        pv = w.private_valuation
+        parts += ["## Valuation: public comps, private marks, DCF",
+                  f"Last private mark: **{fmt_money_mm(pv.last_mark_mm)}** ({pv.last_mark_date}; {pv.last_mark_source}). "
+                  f"Estimated revenue {fmt_money_mm(pv.estimated_revenue_mm)} ({pv.revenue_basis}). Verdict on the mark: **{pv.verdict}**.",
+                  _table(["Method", "Multiple", "Applied to", "Implied EV", "Basis"],
+                         [[m.method.replace("_", " "), f"{m.multiple:.1f}x" if m.multiple else "n/a", m.metric,
+                           fmt_money_mm(m.implied_value_mm), m.basis] for m in pv.methods]),
+                  f"**Read-through for the public names:** {pv.read_through}",
+                  w.valuation_discussion, "## Relative value vs peers", w.relative_value]
     else:
         parts.append("## Scenarios and positioning")
         if w.macro_scenarios:
             parts.append(_table(["Scenario", "Probability", "What it looks like", "Implications"],
                                 [[s.name, f"{s.probability_pct:.0f}%", s.description, s.implications] for s in w.macro_scenarios]))
         parts.append(w.valuation_discussion)
+        if w.relative_value:
+            parts += ["## Relative value vs peers", w.relative_value]
     parts += [
         "## Key risks",
         "\n".join(f"{i}. {r}" for i, r in enumerate(w.key_risks, 1)),
@@ -208,12 +274,16 @@ def build_research_record(w: ResearchWriteup, agent_name: str, agent_type: str, 
             "catalysts": w.catalysts,
             "data_gaps": w.data_gaps,
             "macro_scenarios": [s.model_dump() for s in w.macro_scenarios],
+            "relative_value": w.relative_value,
+            "private_valuation": w.private_valuation.model_dump() if w.private_valuation else None,
             "company_background": w.company_background.model_dump(),
             "valuation": {
                 "football_field": outputs["football_field"],
                 "probability_weighted_price": outputs["probability_weighted_price"],
                 "valuation_range": outputs["valuation_range"],
                 "share_price": outputs["capitalization"]["share_price"],
+                "relative_value": outputs.get("relative_value"),
+                "private_market": outputs.get("private_market"),
             } if outputs else None,
         },
     }

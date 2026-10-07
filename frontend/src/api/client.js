@@ -103,6 +103,7 @@ export const api = {
   officeConversation: (id) => request(`/office/conversations/${id}`),
   memo: (id) => request(`/memos/${id}`),
   charter: () => request("/charter"),
+  relativeValue: () => request("/relative-value"),
   archive: () => request("/archive"),
   strategyLatest: () => request("/strategy/latest"),
   strategySessions: () => request("/strategy?limit=10"),

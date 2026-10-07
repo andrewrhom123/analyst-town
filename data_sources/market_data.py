@@ -208,10 +208,20 @@ def get_daily_history(symbol: str) -> list[dict]:
 
 # --- Peer multiples for comps -------------------------------------------------
 
+def revenue_growth_pct(o: dict | None) -> float | None:
+    """Revenue growth in percent: Finnhub TTM (already %), else Alpha Vantage quarterly YoY (a fraction)."""
+    if not o:
+        return None
+    if o.get("revenue_growth_ttm_yoy_pct") is not None:
+        return o["revenue_growth_ttm_yoy_pct"]
+    q = o.get("quarterly_revenue_growth_yoy")
+    return q * 100 if q is not None else None
+
+
 def _peer_row(symbol: str, o: dict | None) -> dict:
     if not o:
         return {"symbol": symbol, "name": None, "market_cap_mm": None, "enterprise_value_mm": None,
-                "ev_to_revenue": None, "ev_to_ebitda": None, "as_of": None}
+                "ev_to_revenue": None, "ev_to_ebitda": None, "revenue_growth_pct": None, "gross_margin_pct": None, "as_of": None}
     ev_rev = o.get("ev_to_revenue")
     if o.get("enterprise_value"):
         ev = o["enterprise_value"] / 1e6
@@ -225,6 +235,8 @@ def _peer_row(symbol: str, o: dict | None) -> dict:
         "enterprise_value_mm": ev,
         "ev_to_revenue": ev_rev if ev_rev and ev_rev > 0 else None,
         "ev_to_ebitda": ev_ebitda if ev_ebitda and ev_ebitda > 0 else None,  # negative EBITDA -> not meaningful
+        "revenue_growth_pct": revenue_growth_pct(o),  # for growth-adjusted relative value
+        "gross_margin_pct": o.get("gross_margin_ttm_pct"),
         "as_of": o.get("as_of"),
     }
 

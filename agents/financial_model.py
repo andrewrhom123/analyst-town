@@ -81,6 +81,24 @@ class CompsView(BaseModel):
     rationale: str = Field(description="Why that bucket, and which bucket the thesis argues it should migrate toward")
 
 
+class PrivateMark(BaseModel):
+    name: str = Field(description="Private company round or transaction, e.g. 'Kalshi Series E' or 'Take-private of X by Y'")
+    kind: Literal["funding_round", "secondary", "acquisition", "take_private", "ipo"]
+    date: str
+    valuation_mm: float = Field(description="Post-money valuation or deal enterprise value, $mm")
+    revenue_mm: float | None = Field(description="Revenue or run-rate at the time, $mm, if known (null if not)")
+    source: str = Field(description="Where it comes from (a filing or headline in the data); 'general knowledge, unverified' otherwise")
+    relevance: str = Field(description="Why this mark is comparable to the business being valued")
+
+
+class PrivateMarketView(BaseModel):
+    marks: list[PrivateMark] = Field(description="2-6 private-market reference points: private peers' funding rounds or "
+                                                 "secondaries, precedent acquisitions, take-privates. Empty if none credible")
+    applied_ev_to_revenue: float | None = Field(description="EV/revenue a private-market or strategic buyer would pay for this "
+                                                            "business today (after control premium / illiquidity), or null")
+    rationale: str = Field(description="How the marks translate into that multiple, and where private marks sit vs public comps")
+
+
 class NextPrint(BaseModel):
     period: str = Field(description="Next reported quarter as a calendar frame matching the XBRL table, e.g. 'CY2026Q3'")
     revenue_estimate_mm: float
@@ -108,6 +126,7 @@ class ModelInputs(BaseModel):
     dcf: DCFAssumptions
     scenarios: Scenarios
     comps: CompsView
+    private_market: PrivateMarketView
     next_print: NextPrint
     key_assumptions: list[str] = Field(description="The 4-8 assumptions that drive the answer, each with its basis")
     model_notes: str = Field(description="Caveats: accounting basis, calendarization, pro forma treatment, data gaps")
@@ -302,8 +321,8 @@ def _equity_and_price(ev: float | None, cap: Capitalization) -> tuple[float | No
 
 # --- Main entry point ----------------------------------------------------------------
 
-def compute_model(m: ModelInputs, comps: dict | None = None, valuation_date: date | None = None) -> dict:
-    """Validate and compute everything. `comps` = {bucket: [peer dicts with ev_to_revenue / ev_to_ebitda]}."""
+def compute_model(m: ModelInputs, comps: dict | None = None, valuation_date: date | None = None, symbol: str = "SUBJECT") -> dict:
+    """Validate and compute everything. `comps` = {bucket: [peer dicts with ev_to_revenue / ev_to_ebitda / growth]}."""
     comps = comps or {}
     validate_inputs(m, comps)
     valuation_date = valuation_date or date.today()
@@ -387,6 +406,14 @@ def compute_model(m: ModelInputs, comps: dict | None = None, valuation_date: dat
     if primary.get("median_ev_to_ebitda") and cur["adj_ebitda"] and cur["adj_ebitda"] > 0:
         add("Comps - EV/EBITDA", primary["median_ev_to_ebitda"] * cur["adj_ebitda"],
             f"{m.comps.primary_bucket} median {primary['median_ev_to_ebitda']:.1f}x LTM x {cur['year']} adj. EBITDA")
+    # Private market: funding rounds, secondaries, precedent M&A / take-privates
+    pm = m.private_market
+    marks = [{**k.model_dump(), "implied_ev_to_revenue": k.valuation_mm / k.revenue_mm if k.revenue_mm else None} for k in pm.marks]
+    private_market = {"marks": marks, "median_mark_ev_to_revenue": _median(k["implied_ev_to_revenue"] for k in marks),
+                      "applied_ev_to_revenue": pm.applied_ev_to_revenue, "rationale": pm.rationale}
+    if pm.applied_ev_to_revenue and cur["revenue"]:
+        add("Private market / M&A", pm.applied_ev_to_revenue * cur["revenue"],
+            f"{pm.applied_ev_to_revenue:.1f}x {cur['year']} revenue from private marks and precedent deals")
     sotp_parts = [(s.name, s.revenue_mm[first_e], s.sotp_ev_to_revenue) for s in m.revenue_segments
                   if s.sotp_ev_to_revenue and s.revenue_mm[first_e]]
     sotp_ev = sum(r * x for _, r, x in sotp_parts) if sotp_parts else None
@@ -428,7 +455,7 @@ def compute_model(m: ModelInputs, comps: dict | None = None, valuation_date: dat
         valuation_range = {"low_equity_value": lo, "high_equity_value": hi,
                            "low_price": lo / cap.diluted_shares_mm, "high_price": hi / cap.diluted_shares_mm}
 
-    return {
+    outputs = {
         "fiscal_years": years,
         "current_year": cur["year"],
         "rows": rows,
@@ -437,11 +464,105 @@ def compute_model(m: ModelInputs, comps: dict | None = None, valuation_date: dat
         "dcf": dcf,
         "sensitivities": sensitivities,
         "comps": {"primary_bucket": m.comps.primary_bucket, "buckets": buckets},
+        "private_market": private_market,
         "football_field": methods,
         "scenarios": scenarios,
         "probability_weighted_price": weighted,
         "valuation_range": valuation_range,
     }
+    outputs["relative_value"] = relative_value(outputs, symbol)
+    return outputs
+
+
+# --- Relative value: who is rich vs cheap inside each comps bucket ------------------------------
+
+RICH_CHEAP_BAND_PCT = 15.0  # beyond +/- this vs fair multiple: rich / cheap
+# A multiple more than this many times away from the bucket median usually means a different revenue basis
+# (e.g. gross crypto trading revenue vs net), not mispricing: flag it and keep it out of the fit and ranking.
+OUTLIER_FACTOR = 5.0
+
+
+def _fit_multiple_on_growth(points: list[tuple[float, float]]) -> dict | None:
+    """OLS of EV/revenue on revenue growth across a bucket. Needs 3+ names and an upward slope to be meaningful."""
+    if len(points) < 3 or len({g for g, _ in points}) < 2:
+        return None
+    n = len(points)
+    mg = sum(g for g, _ in points) / n
+    mm = sum(x for _, x in points) / n
+    sxx = sum((g - mg) ** 2 for g, _ in points)
+    slope = sum((g - mg) * (x - mm) for g, x in points) / sxx
+    if slope <= 0:
+        return None
+    intercept = mm - slope * mg
+    ss_tot = sum((x - mm) ** 2 for _, x in points)
+    ss_res = sum((x - (intercept + slope * g)) ** 2 for g, x in points)
+    return {"intercept": intercept, "slope": slope, "n": n, "r2": 1 - ss_res / ss_tot if ss_tot else None}
+
+
+def score_bucket(names: list[dict]) -> dict:
+    """Rank names (dicts with symbol, ev_to_revenue, revenue_growth_pct, optional is_subject) rich-to-cheap:
+    EV/revenue vs the bucket median (subject excluded) and vs a growth-adjusted fair multiple fitted across the bucket."""
+    raw_median = _median(n.get("ev_to_revenue") for n in names if not n.get("is_subject"))
+
+    def outlier(n):
+        evr = n.get("ev_to_revenue")
+        return bool(evr and raw_median and (evr > raw_median * OUTLIER_FACTOR or evr < raw_median / OUTLIER_FACTOR))
+
+    clean = [n for n in names if not outlier(n)]
+    fit = _fit_multiple_on_growth([(n["revenue_growth_pct"], n["ev_to_revenue"]) for n in clean
+                                   if n.get("revenue_growth_pct") is not None and n.get("ev_to_revenue")])
+    median = _median(n.get("ev_to_revenue") for n in clean if not n.get("is_subject"))
+    rows = []
+    for n in names:
+        evr, g = n.get("ev_to_revenue"), n.get("revenue_growth_pct")
+        if outlier(n):
+            rows.append({**{k: v for k, v in n.items()}, "symbol": n.get("symbol"), "name": n.get("name"),
+                         "is_subject": bool(n.get("is_subject")), "ev_to_revenue": evr, "ev_to_ebitda": n.get("ev_to_ebitda"),
+                         "revenue_growth_pct": g, "growth_adjusted_ev_to_revenue": None, "fair_ev_to_revenue": None,
+                         "vs_median_pct": None, "vs_fair_pct": None, "gap_pct": None, "basis": None, "verdict": None,
+                         "flag": f"{evr:.1f}x is >{OUTLIER_FACTOR:.0f}x away from the bucket median: check revenue basis (gross vs net)"})
+            continue
+        fair = fit["intercept"] + fit["slope"] * g if fit and g is not None else None
+        fair = fair if fair and fair > 0 else None
+        vs_median = (evr / median - 1) * 100 if evr and median else None
+        vs_fair = (evr / fair - 1) * 100 if evr and fair else None
+        gap = vs_fair if vs_fair is not None else vs_median
+        verdict = None if gap is None else "rich" if gap > RICH_CHEAP_BAND_PCT else "cheap" if gap < -RICH_CHEAP_BAND_PCT else "in line"
+        rows.append({**{k: v for k, v in n.items() if k not in ("ev_to_revenue", "revenue_growth_pct")},
+                     "symbol": n.get("symbol"), "name": n.get("name"), "is_subject": bool(n.get("is_subject")),
+                     "ev_to_revenue": evr, "ev_to_ebitda": n.get("ev_to_ebitda"), "revenue_growth_pct": g,
+                     "growth_adjusted_ev_to_revenue": evr / g if evr and g and g > 0 else None,
+                     "fair_ev_to_revenue": fair, "vs_median_pct": vs_median, "vs_fair_pct": vs_fair, "gap_pct": gap,
+                     "basis": "growth-adjusted" if vs_fair is not None else "bucket median" if vs_median is not None else None,
+                     "verdict": verdict})
+    ranked = sorted([r for r in rows if r["verdict"]], key=lambda r: -r["gap_pct"])
+    for i, r in enumerate(ranked, 1):
+        r["rank_rich_to_cheap"] = i
+    return {"median_ev_to_revenue": median, "fit": fit, "rows": ranked + [r for r in rows if not r["verdict"]]}
+
+
+def relative_value(outputs: dict, symbol: str, peer_growth: dict | None = None) -> list[dict]:
+    """Per comps bucket of one model: the subject (current-year EV/revenue and growth from the model) ranked
+    against its peers (LTM). `peer_growth` fills peers' growth when the stored comps predate growth data."""
+    cap = outputs.get("capitalization") or {}
+    cur = next((r for r in outputs.get("rows", []) if r.get("year") == cap.get("current_year")), {})
+    subject = {"symbol": symbol, "name": "this company", "is_subject": True,
+               "ev_to_revenue": cap.get("ev_to_revenue_current_year"), "ev_to_ebitda": cap.get("ev_to_ebitda_current_year"),
+               "revenue_growth_pct": cur.get("revenue_growth_pct")}
+    result = []
+    for bucket, b in ((outputs.get("comps") or {}).get("buckets") or {}).items():
+        names = [subject]
+        for p in b.get("peers", []):
+            if p.get("symbol") == symbol:
+                continue
+            p = {k: p.get(k) for k in ("symbol", "name", "ev_to_revenue", "ev_to_ebitda", "revenue_growth_pct")}
+            if p.get("revenue_growth_pct") is None and peer_growth:
+                p["revenue_growth_pct"] = peer_growth.get(p["symbol"])
+            names.append(p)
+        scored = score_bucket(names)
+        result.append({"bucket": bucket, "primary": bucket == (outputs.get("comps") or {}).get("primary_bucket"), **scored,
+                       "subject": next((r for r in scored["rows"] if r["is_subject"]), None)})
+    return result
 
 
 def summary_for_research(outputs: dict) -> dict:
@@ -457,6 +578,11 @@ def summary_for_research(outputs: dict) -> dict:
     summary["valuation_range"] = (
         f"${vr['low_equity_value'] / 1000:,.1f}-{vr['high_equity_value'] / 1000:,.1f}B" if vr else "n/a"
     )
+    rel = [f"{b['bucket']}: {b['subject']['verdict']} ({b['subject']['vs_fair_pct'] if b['subject']['vs_fair_pct'] is not None else b['subject']['vs_median_pct']:+.0f}% vs "
+           f"{'growth-adjusted fair' if b['subject']['vs_fair_pct'] is not None else 'median'})"
+           for b in outputs.get("relative_value") or [] if b.get("subject") and b["subject"].get("verdict")]
+    if rel:
+        summary["relative_value"] = "; ".join(rel)
     return summary
 
 
@@ -481,5 +607,12 @@ def describe_for_claude(outputs: dict) -> dict:
         "comps_primary_bucket": outputs["comps"]["primary_bucket"],
         "comps_bucket_medians": {name: {"ev_to_revenue": b["median_ev_to_revenue"], "ev_to_ebitda": b["median_ev_to_ebitda"]}
                                  for name, b in outputs["comps"]["buckets"].items()},
+        "private_market": {k: (r(v, 2) if not isinstance(v, list) else v) for k, v in (outputs.get("private_market") or {}).items()},
+        "relative_value": [{"bucket": b["bucket"], "median_ev_to_revenue": r(b["median_ev_to_revenue"], 2),
+                            "fit": {k: r(v, 3) for k, v in (b["fit"] or {}).items()} or None,
+                            "rank_rich_to_cheap": [{k: r(v, 1) for k, v in row.items() if k in (
+                                "symbol", "ev_to_revenue", "revenue_growth_pct", "fair_ev_to_revenue", "vs_median_pct",
+                                "vs_fair_pct", "verdict", "is_subject")} for row in b["rows"]]}
+                           for b in outputs.get("relative_value") or []],
         "research_json_financial_model": summary_for_research(outputs),
     }

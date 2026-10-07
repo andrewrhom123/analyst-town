@@ -156,9 +156,21 @@ def render_financial_model(ctx: TickerContext) -> str:
         "next_print": inputs.get("next_print"),
         "key_assumptions": inputs.get("key_assumptions"),
         "comps_primary_bucket": outputs["comps"]["primary_bucket"],
+        "relative_value": _relative_value(outputs, ctx.symbol),
+        "private_market": outputs.get("private_market"),
         "excel": f"/coverage/{ctx.symbol}/model.xlsx",
     }
     return json.dumps(doc, indent=2, default=str)
+
+
+def _relative_value(outputs: dict, symbol: str) -> list[dict]:
+    """Rank vs bucket peers, recomputed with today's cached peer growth (older models stored no peer growth)."""
+    from agents.financial_model import relative_value
+    from data_sources.market_data import revenue_growth_pct
+
+    peers = {p["symbol"] for b in (outputs.get("comps") or {}).get("buckets", {}).values() for p in b.get("peers", [])}
+    growth = {sym: revenue_growth_pct(get_cached("market_overview", sym, None)) for sym in peers}
+    return relative_value(outputs, symbol, growth)
 
 
 def price_snapshot(ctx: TickerContext) -> dict:

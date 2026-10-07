@@ -72,3 +72,27 @@
 .theme-rows { display: flex; flex-direction: column; gap: 8px; }
 .theme-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 14px; padding: 8px 10px; border-radius: 10px; background: var(--bg); }
 .theme-row .faint { font-size: 12px; }
+
+/* Relative value board: bars centred on the growth-adjusted fair multiple (right = rich, left = cheap) */
+.rv-bucket { padding: 10px 0; border-top: 1px solid #eceef1; }
+.rv-bucket:first-of-type { border-top: 0; padding-top: 0; }
+.rv-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 13px; margin-bottom: 6px; }
+.rv-head .faint { font-size: 11px; }
+.rv-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.rv-rows li { display: grid; grid-template-columns: 74px 1fr 48px 92px; align-items: center; gap: 8px; font-size: 12px; }
+.rv-sym { background: none; border: 0; padding: 0; text-align: left; font-size: 12px; color: var(--text-2); cursor: default; }
+.rv-rows li.ours .rv-sym { font-weight: 800; color: var(--text); }
+.rv-sym:not(:disabled) { cursor: pointer; text-decoration: underline dotted; }
+.rv-bar { position: relative; height: 10px; background: var(--bg); border-radius: 5px; }
+.rv-bar i { position: absolute; top: 0; bottom: 0; border-radius: 5px; }
+.rv-rows li.rich .rv-bar i { background: color-mix(in srgb, var(--down) 70%, #fff); }
+.rv-rows li.cheap .rv-bar i { background: color-mix(in srgb, var(--up) 70%, #fff); }
+.rv-rows li.in.line .rv-bar i, .rv-rows li[class*="in line"] .rv-bar i { background: #cbd5e1; }
+.rv-mid { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--text-3); }
+.rv-num { text-align: right; }
+.rv-rows li.rich .rv-num { color: var(--down); }
+.rv-rows li.cheap .rv-num { color: var(--up); }
+.rv-rows li.na .rv-num { color: var(--amber); }
+.rv-meta { font-size: 11px; white-space: nowrap; }
+.rv-pair { margin-top: 6px; font-size: 12.5px; }
+.rv-note { font-size: 11px; margin: 10px 0 0; }

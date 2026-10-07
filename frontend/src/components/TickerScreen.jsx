@@ -6,6 +6,7 @@ import { EarningsCard, TickerNews, TickerThemes } from "./Dashboard.jsx";
 import DownloadButtons from "./DownloadButtons.jsx";
 import ElevatorPitch, { ThesisDetails } from "./ElevatorPitch.jsx";
 import Markdown from "./Markdown.jsx";
+import { ModelRelativeValue } from "./RelativeValue.jsx";
 
 function useLoad(fetcher, deps) {
   const [state, setState] = useState({ data: null, error: null });
@@ -76,6 +77,7 @@ function ModelView({ agentId, ticker }) {
           {data.scenarios.map((s) => <li key={s.name}><b>{s.name}</b> ({s.probability_pct}%): {fmtPrice(s.implied_price)}. <span className="muted">{s.description}</span></li>)}
         </ul>
       </section>
+      <ModelRelativeValue relativeValue={data.relative_value} privateMarket={data.private_market} />
     </>
   );
 }

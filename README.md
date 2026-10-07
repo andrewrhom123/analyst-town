@@ -117,6 +117,15 @@ into every prompt along with the PM's active **research charter**. Theses carry 
    about anything, grounded in the analyst's whole book; transcripts, key insights and trade ideas are stored
    (`office_conversations`). `GET /archive` lists everything for review afterwards.
 
+**Valuation: both ways, both markets, relative to peers.** Every public model values the company by DCF and by
+comps (EV/revenue, EV/EBITDA, SOTP) plus a **private-market** row (private peers' rounds and secondaries,
+precedent M&A / take-privates). Private companies get the same three lenses (public comps, private marks, DCF
+sanity check) and a verdict on their last mark. Inside every comps bucket the engine ranks names rich-to-cheap on
+EV/revenue vs a growth-adjusted fair multiple (EV/revenue regressed on revenue growth across the bucket; names >5x
+off the median are flagged as a different revenue basis, not mispricing). The town page's **Relative value** board
+(`GET /relative-value`, cache only) shows every bucket with the long-cheap / short-rich pair it implies; analysts
+see the same board in town halls and office conversations.
+
 Live updates use short polling (2.5-4s) rather than Socket.io: it works on Railway/Vercel with no extra infrastructure.
 
 ## Frontend: Analyst Town (`frontend/`)

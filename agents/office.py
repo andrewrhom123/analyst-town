@@ -17,6 +17,7 @@ from agents import llm
 from agents.meeting import _board, _desk_view, headlines, macro_indicators
 from agents.philosophy import framework_block
 from agents.registry import FOCUS_METRICS, analyst_info
+from agents.relative_value import desk_relative_value
 from agents.thesis import analyst_lessons
 from database.db import session_scope
 from database.models import Memo, OfficeConversation
@@ -56,7 +57,8 @@ def serialize(c: OfficeConversation) -> dict:
 
 def _system(info: dict, focus: str | None) -> str:
     board = _board().get(info["key"]) or {"analyst": info["name"], "agent_type": info["agent_type"], "tickers": {}}
-    book = {"your_names": _desk_view(board), "headlines": headlines(list(board["tickers"]), per_ticker=2)}
+    book = {"your_names": _desk_view(board), "headlines": headlines(list(board["tickers"]), per_ticker=2),
+            "relative_value": desk_relative_value(list(board["tickers"]))}
     if info["agent_type"] == "macro":
         book["macro_indicators"] = macro_indicators()
     with session_scope() as s:

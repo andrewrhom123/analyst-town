@@ -258,9 +258,17 @@ def agent_memo(agent_id: str, symbol: str, db: Session = Depends(get_db)):
 @app.get("/agents/{agent_id}/ticker/{symbol}/model")
 def agent_model(agent_id: str, symbol: str):
     _agent_or_404(agent_id)
-    _ticker_or_404(symbol)
+    ctx = _ticker_or_404(symbol)
     f = read_file(symbol, "financial_model.json")
-    return json.loads(f["content"]) if f else {"note": "no model yet"}
+    doc = json.loads(f["content"]) if f else {"note": "no model yet"}
+    if doc.get("annual") and "relative_value" not in doc:  # file written before relative value existed
+        from agents.coverage_files import _relative_value
+        from agents.thesis import latest_model_outputs
+        outputs = latest_model_outputs(ctx.ticker_id)
+        if outputs:
+            doc["relative_value"] = _relative_value(outputs, ctx.symbol)
+            doc["private_market"] = outputs.get("private_market")
+    return doc
 
 
 @app.get("/agents/{agent_id}/ticker/{symbol}/price")
@@ -607,6 +615,13 @@ def get_pitches(limit: int = Query(30, ge=1, le=200), db: Session = Depends(get_
     return [{"id": p.id, "analyst": p.analyst_name, "analyst_key": p.analyst_key, "title": p.title, "long_ticker": p.long_ticker,
              "short_ticker": p.short_ticker, "structure": p.structure, "conviction": p.conviction, "created_at": _iso(p.created_at),
              "meeting_id": p.meeting_id, "session_id": p.session_id, "data": p.data, "discussion": p.discussion} for p in rows]
+
+
+@app.get("/relative-value")
+def get_relative_value():
+    """Who is over- vs under-priced against peers in each comps bucket, with the pair it implies (cache only, free)."""
+    from agents.relative_value import pod_relative_value
+    return pod_relative_value()
 
 
 @app.get("/charter")

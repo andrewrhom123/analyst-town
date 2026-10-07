@@ -148,8 +148,9 @@ analysts:
     type: sector
     color: "#4ade80"
     focus_notes: >-
-      Internet platforms and marketplaces: ad tech, travel, delivery and mobility. Take rates, gross bookings,
-      engagement and user adoption, unit economics, and platform competition (walled gardens, OTAs, aggregators).
+      Internet platforms and marketplaces: ad tech, travel, delivery and mobility, online betting and prediction
+      markets. Take rates, gross bookings, handle and hold, engagement and user adoption, unit economics, and
+      platform competition (walled gardens, OTAs, aggregators, sportsbooks vs event-contract exchanges).
     tickers:
       - symbol: NAVN
         aliases: [NVAN]
@@ -230,6 +231,35 @@ analysts:
         competitors: [Expedia (EXPE), Airbnb (ABNB), Google Travel, Trip.com]
         comps_buckets:
           Online Travel: [EXPE, ABNB, TRIP]
+      - symbol: DKNG
+        aliases: [DRAFTKINGS]
+        name: DraftKings
+        type: public
+        description: >-
+          DraftKings (NASDAQ DKNG), online sports betting, iGaming and daily fantasy, pushing into prediction markets
+          (CFTC-regulated event contracts) alongside its state-licensed sportsbook.
+        news_query: >-
+          DraftKings OR DKNG OR ("prediction market" AND (sports OR Kalshi OR Polymarket OR FanDuel OR DraftKings))
+        news_keywords: [draftkings, dkng, sportsbook, igaming, prediction market, event contract, kalshi, polymarket]
+        competitors:
+          - FanDuel (Flutter, FLUT)
+          - BetMGM (MGM / Entain)
+          - Caesars Sportsbook (CZR)
+          - Fanatics Betting & Gaming
+          - Kalshi (private)
+          - Polymarket (private)
+          - Robinhood prediction markets (HOOD)
+          - PrizePicks
+          - Underdog
+        focus_notes: >-
+          Handle, structural hold and promo intensity; OSB vs iGaming revenue mix; state legalization and gaming-tax
+          hikes; adjusted EBITDA inflection, FCF and buybacks. Prediction markets: event contracts reaching states
+          without legal sports betting, CFTC vs state-regulator fights, whether they cannibalize or expand the
+          sportsbook TAM, and economics vs a sportsbook (exchange fees vs hold). Relative value vs FLUT, and vs the
+          private marks for Kalshi and Polymarket; read-through to HOOD's prediction-market business.
+        comps_buckets:
+          Online Sports Betting & iGaming: [FLUT, MGM, CZR, PENN, RSI]
+          Prediction Markets & Exchanges: [HOOD, CME, ICE]
 
   - key: ai
     name: AI Analyst

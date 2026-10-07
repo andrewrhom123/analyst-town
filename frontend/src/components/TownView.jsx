@@ -3,6 +3,7 @@ import { changeClass, featuredTicker, fmtPct, fmtPrice, timeAgo } from "../forma
 import { LAPTOP_QUERY, useMediaQuery } from "../hooks.js";
 import ConvictionMeter from "./ConvictionMeter.jsx";
 import { NewsFeed, ThemesBoard } from "./Dashboard.jsx";
+import { RelativeValueBoard } from "./RelativeValue.jsx";
 
 // three.js is only downloaded on laptop-size screens.
 const TownScene = lazy(() => import("../3d/TownScene.jsx"));
@@ -129,6 +130,7 @@ export default function TownView({ agents, onEnterAgent, onOpenHall, onTicker })
       <>
         <Carousel agents={agents} onEnterAgent={onEnterAgent} onOpenHall={onOpenHall} />
         <div className="dash-mobile">
+          <RelativeValueBoard onTicker={onTicker} limit={4} />
           <ThemesBoard onTicker={onTicker} />
           <NewsFeed onTicker={onTicker} limit={15} />
         </div>
@@ -148,6 +150,7 @@ export default function TownView({ agents, onEnterAgent, onOpenHall, onTicker })
         </div>
       </div>
       <aside className="dash-side" aria-label="Market dashboard">
+        <RelativeValueBoard onTicker={onTicker} />
         <ThemesBoard onTicker={onTicker} />
         <NewsFeed onTicker={onTicker} />
       </aside>

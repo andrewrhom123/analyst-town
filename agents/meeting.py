@@ -26,6 +26,7 @@ from agents import llm
 from agents.coverage_files import add_meeting_notes
 from agents.philosophy import framework_block
 from agents.registry import FOCUS_METRICS, active_contexts, get_context
+from agents.relative_value import desk_relative_value
 from agents.thesis import TradingThesisOut, analyst_lessons, compact_research, current_thesis, latest_research
 from data_sources.cache import get_cached
 from data_sources.price_feed import latest_tick
@@ -255,6 +256,7 @@ def _run(meeting_id: int) -> dict:
         a = board[key]
         _progress(meeting_id, f"{a['analyst']} is giving the rundown")
         payload = {"your_names": _desk_view(a), "headlines": headlines(list(a["tickers"])),
+                   "relative_value": desk_relative_value(list(a["tickers"])),
                    "colleagues_so_far": [{"analyst": r["analyst"], "rundown": r["spoken"], "pitch": r.get("pitch_title")} for r in rundowns]}
         if a["agent_type"] == "macro":
             payload["macro_indicators"] = macro_indicators()

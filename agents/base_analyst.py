@@ -121,7 +121,9 @@ MODEL_GUIDE = """Financial model conventions (match the PM's BLSH / PUBM workboo
 - Margins, SBC, D&A and capex are % of revenue per year. Prefer treating SBC as a real cash cost in the DCF.
 - Bull and bear move the key driver, not everything at once, and each states its basis (e.g. TAM growth, management targets, a taper). Probabilities sum to 100.
 - Pick a WACC that fits the risk (small-cap ad tech / crypto-beta names typically 10-15%). If terminal value exceeds ~75% of EV, the answer is mostly the terminal assumption: say so.
-- Comps multiples supplied are LTM from the market-data feed; peers with missing multiples are n/a. Choose the primary bucket the market prices the stock on today. Give segment SOTP multiples from the relevant bucket medians where it makes sense.
+- Comps multiples supplied are LTM from the market-data feed (with revenue growth); peers with missing multiples are n/a. Choose the primary bucket the market prices the stock on today. Give segment SOTP multiples from the relevant bucket medians where it makes sense.
+- Value it BOTH ways, on BOTH lenses: intrinsic (DCF) and relative (comps), in public markets and private markets. In private_market give the funding rounds / secondaries of private peers and precedent acquisitions or take-privates (cite the headline or filing; label anything else 'general knowledge, unverified') and the EV/revenue a private or strategic buyer would pay. The engine adds a private-market row to the football field.
+- The engine ranks every name in each comps bucket rich-to-cheap on EV/revenue vs a growth-adjusted fair multiple (regressed across the bucket). This is central to how the PM invests: say who is over- vs under-priced against whom, and whether the subject is the cheap or rich leg of a pair.
 - Next print: estimate the next reported quarter against company guidance and explain the gap."""
 
 THESIS_GUIDE = """Trading thesis (the active position view the PM manages day to day):
@@ -147,6 +149,10 @@ def build_system_prompt(ctx: TickerContext) -> str:
         workflow = (f"Workflow: call {RESEARCH_TOOL} with your research. There is no company model for this "
                     f"{'private company' if ctx.ticker_type == 'private' else 'index/instrument'}; use macro_scenarios for 2-4 "
                     "regimes and say what each means for the pod's coverage.")
+        if ctx.ticker_type == "private":
+            workflow += (" Fill private_valuation: value it three ways (public comps from the supplied buckets applied to your "
+                         "best revenue estimate, private marks from rounds/secondaries/deals, and a DCF sanity check), judge whether "
+                         "the last mark is over- or under-priced, and give the read-through for the public names in the bucket.")
     return f"""You are {ctx.analyst_name}, {role} in a small research pod. This is a full deep dive on {ctx.symbol}: {ctx.description}
 Your analyst focus: {ctx.analyst_focus}
 {siblings}
@@ -403,7 +409,7 @@ def run_conversation(ctx: TickerContext, data: dict, memory: dict, track_record:
             try:
                 if block.name == MODEL_TOOL:
                     model_inputs = ModelInputs.model_validate(block.input)
-                    model_outputs = compute_model(model_inputs, comps)
+                    model_outputs = compute_model(model_inputs, comps, symbol=ctx.symbol)
                     content = _dump(describe_for_claude(model_outputs))
                 elif block.name == RESEARCH_TOOL:
                     if ctx.has_model and model_outputs is None:
