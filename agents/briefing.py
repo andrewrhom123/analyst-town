@@ -6,6 +6,7 @@ import re
 from sqlalchemy import select
 
 from agents import llm
+from agents.philosophy import framework_block
 from agents.coverage_files import price_snapshot, read_file
 from agents.registry import FOCUS_METRICS, get_context
 from agents.thesis import analyst_lessons, compact_research, current_thesis, latest_research, pod_snapshot, render_thesis_md
@@ -49,6 +50,8 @@ def briefing(symbol: str) -> dict:
         "research_conviction": full.get("conviction_level"),
         "research_date": full.get("date"),
         "thesis": t.get("thesis"),
+        "market_missing": t.get("market_missing"),
+        "trade_structure": t.get("trade_structure"),
         "risk_factors": t.get("risk_factors"),
         "next_catalysts": t.get("next_catalysts"),
         "cross_ticker_dependencies": t.get("cross_ticker_dependencies"),
@@ -89,6 +92,7 @@ def ask(symbol: str, question: str) -> dict:
     system = (
         f"You are {ctx.analyst_name}, covering {ctx.symbol} ({ctx.description}) in a research pod. The PM is asking you "
         f"a question directly. They care about {', '.join(FOCUS_METRICS)} and position management.\n"
+        f"{framework_block()}\n"
         "Answer immediately and concisely in the first person, like a sharp analyst at the PM's desk: lead with the answer, "
         "then the reasoning. For a what-if (e.g. 'earnings miss 20%'), show the math off your model: which inputs move and "
         "what happens to revenue, EBITDA, FCF, the implied value and your entry/exit levels. If you lack the data, say what "
@@ -109,9 +113,10 @@ def ask(symbol: str, question: str) -> dict:
                 "answer": answer, "date": row.date.isoformat()}
 
 
-COMMAND = re.compile(r"^/(?P<cmd>briefing|ask|meeting|deepdive|update|add|remove|reassign|coverage)\b\s*(?P<rest>.*)$",
+COMMAND = re.compile(r"^/(?P<cmd>briefing|ask|meeting|townhall|strategy|research|deepdive|update|add|remove|reassign|coverage)\b\s*(?P<rest>.*)$",
                      re.IGNORECASE | re.DOTALL)
-HELP = ("Commands: /briefing TICKER · /ask TICKER: question · /meeting · /add TICKER to AGENT · "
+HELP = ("Commands: /briefing TICKER · /ask TICKER: question · /townhall (daily research town hall now) · "
+        "/strategy (strategy session) · /research (research conversation) · /add TICKER to AGENT · "
         "/remove TICKER from AGENT · /reassign TICKER from AGENT to AGENT · /coverage AGENT · /deepdive TICKER · /update TICKER")
 
 
@@ -122,8 +127,10 @@ def parse_command(text: str) -> dict:
     if not m:
         raise ValueError(HELP)
     cmd, rest = m.group("cmd").lower(), m.group("rest").strip()
-    if cmd == "meeting":
+    if cmd in ("meeting", "townhall"):
         return {"command": "meeting"}
+    if cmd in ("strategy", "research"):
+        return {"command": cmd}
     if cmd == "coverage":
         return {"command": "coverage", "agent": rest or None}
     if cmd == "add":

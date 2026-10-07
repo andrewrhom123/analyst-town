@@ -106,3 +106,36 @@
 .past-sessions li { display: flex; align-items: center; gap: 10px; }
 .past-sessions li span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 520px) { .steps { grid-template-columns: repeat(2, 1fr); } .context-card dl { grid-template-columns: 1fr; } }
+
+/* --- Town hall pitches, ad-hoc mode picker, office insights, thesis edge -------------------------- */
+.board-tabs { grid-template-columns: repeat(3, 1fr); }
+.pitch-list { display: flex; flex-direction: column; gap: 12px; }
+.pitch-card { border: 1px solid var(--panel-border); border-left: 4px solid var(--c); border-radius: 12px; padding: 12px 14px; background: #fff; margin-top: 8px; }
+.pitch-card header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.pitch-card h4 { margin: 6px 0 8px; font-size: 15px; line-height: 1.35; }
+.pitch-card .k, .edge .k { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-3); margin-top: 8px; }
+.pitch-card p { margin: 2px 0 0; font-size: 13.5px; }
+.pitch-card .list { margin: 2px 0 0; font-size: 13.5px; }
+.legs { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.leg { padding: 8px 10px; border-radius: 10px; background: var(--bg); border: 1px solid #eceef1; font-size: 13px; }
+.leg-side { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; padding: 1px 6px; border-radius: 6px; }
+.leg.long .leg-side { background: #ecfdf5; color: var(--green); }
+.leg.short .leg-side { background: #fef2f2; color: var(--red); }
+.leg .spark { height: 34px; margin-top: 4px; }
+.pitch-grid, .edge { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.edge { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--panel-border); }
+.edge p { margin: 2px 0 0; font-size: 14px; }
+.pitch-conv { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.pitch-conv .k { margin: 0; }
+.pitch-debate { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--panel-border); }
+.pitch-response { color: var(--text); }
+.mode-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+.mode-pick > div { padding: 12px; border: 1px solid var(--panel-border); border-radius: 12px; display: flex; flex-direction: column; gap: 6px; }
+.mode-pick h4 { margin: 0; font-size: 15px; }
+.mode-pick p { margin: 0; flex: 1; font-size: 13.5px; }
+.refs { color: var(--text-2); }
+.insights { margin: 0 12px 6px; padding: 6px 10px; border-radius: 10px; background: #f5f3ff; border: 1px solid #ddd6fe; font-size: 13px; }
+.insights summary { cursor: pointer; font-weight: 600; color: #5b21b6; }
+.insights ul { margin: 6px 0 2px; padding-left: 18px; }
+.insights .ideas { color: var(--text); }
+@media (max-width: 640px) { .pitch-grid, .edge, .mode-pick { grid-template-columns: 1fr; } }

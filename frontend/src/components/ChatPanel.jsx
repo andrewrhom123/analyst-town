@@ -20,7 +20,10 @@ function describe(res) {
     case "reassign":
       return { role: "system", text: `Moved ${res.symbol} from ${res.from} to ${res.to}.` };
     case "meeting":
-      return { role: "system", text: "Meeting started. Agents are debating; open the town hall (🗣️) for the minutes in 3-7 minutes." };
+      return { role: "system", text: "Research town hall started: rundowns, pitches and debate. Open the boardroom to listen live (3-7 minutes)." };
+    case "strategy":
+    case "research":
+      return { role: "system", text: `${res.command === "strategy" ? "Strategy session" : "Research conversation"} #${res.session_id} is open in the boardroom (Ad-hoc town hall tab).` };
     case "deepdive":
     case "update":
       return { role: "system", text: res.status === "started" ? `${res.command === "deepdive" ? "Deep dive" : "Thesis update"} started for ${res.ticker}.` : `${res.ticker}: ${res.status}.` };
@@ -31,8 +34,12 @@ function describe(res) {
   }
 }
 
+const fromConversation = (c) => (c?.messages || []).map((m, i) =>
+  m.role === "user" ? { role: "user", text: m.text } : { role: "agent", md: m.text, id: `office-${c.conversation_id}-${i}` });
+
 /**
- * Conversation with the agent. Plain text is asked about the current ticker; slash commands work too.
+ * One-on-one office conversation with the analyst: plain text is a general conversation about anything (the
+ * ticker on screen is context, not a constraint), stored with key insights. Slash commands still work.
  * `dock` = phone layout: a sticky input bar that opens into a sheet riding above the keyboard.
  */
 export default function ChatPanel({ agentId, agentName, ticker, color, dock = false, onCoverageChange }) {
@@ -42,6 +49,7 @@ export default function ChatPanel({ agentId, agentName, ticker, color, dock = fa
   const [open, setOpen] = useState(!dock);
   const [handsFree, setHandsFree] = useState(false);
   const [voiceNote, setVoiceNote] = useState(null);
+  const [conversation, setConversation] = useState(null);
   const log = useRef();
   const mic = useRef();
   const voice = useVoiceStatus();
@@ -69,15 +77,22 @@ export default function ChatPanel({ agentId, agentName, ticker, color, dock = fa
     if (next) { setOpen(true); mic.current?.start(); } else { stopSpeaking(); mic.current?.stop(); }
   };
 
+  // Pick up the latest office conversation with this analyst (it spans tickers).
   useEffect(() => {
     let live = true;
     setMessages([]);
-    if (!ticker) return undefined;
-    api.chatHistory(agentId, ticker)
-      .then((rows) => live && setMessages(rows.flatMap((r) => [{ role: "user", text: r.question }, { role: "agent", md: r.answer }])))
+    setConversation(null);
+    api.officeLatest(agentId)
+      .then((c) => { if (live) { setConversation(c); setMessages(fromConversation(c)); } })
       .catch(() => {});
     return () => { live = false; };
-  }, [agentId, ticker]);
+  }, [agentId]);
+
+  const newConversation = () => {
+    stopSpeaking();
+    setConversation(null);
+    setMessages([]);
+  };
 
   useEffect(() => {
     log.current?.scrollTo({ top: log.current.scrollHeight, behavior: "smooth" });
@@ -91,10 +106,17 @@ export default function ChatPanel({ agentId, agentName, ticker, color, dock = fa
     setMessages((m) => [...m, { role: "user", text: value }]);
     setBusy(true);
     try {
-      const res = await api.command(value, ticker);
-      const reply = { ...describe(res), id: `reply-${Date.now()}` };
+      let reply;
+      if (value.startsWith("/")) {
+        const res = await api.command(value, ticker);
+        reply = { ...describe(res), id: `reply-${Date.now()}` };
+        if (["add", "remove", "reassign"].includes(res.command)) onCoverageChange?.();
+      } else {
+        const c = await api.officeSay(agentId, value, { conversationId: conversation?.conversation_id, ticker, fresh: !conversation });
+        setConversation(c);
+        reply = fromConversation(c).at(-1);
+      }
       setMessages((m) => [...m, reply]);
-      if (["add", "remove", "reassign"].includes(res.command)) onCoverageChange?.();
       setBusy(false);
       voiceReply(reply);
     } catch (e) {
@@ -104,15 +126,23 @@ export default function ChatPanel({ agentId, agentName, ticker, color, dock = fa
     }
   };
 
-  const suggestions = ticker
-    ? [`/briefing ${ticker}`, "What's your bull case?", "What if earnings miss 20%?", "Is this a good entry point?", `/coverage ${agentName.replace(/ (Analyst|Strategist)$/, "")}`]
-    : ["/help"];
+  const suggestions = [
+    "What's the most interesting stock you're covering right now?",
+    "Where do macro headwinds hit your coverage?",
+    "What trade would you do with unlimited capital right now?",
+    ...(ticker ? [`Walk me through your thesis on ${ticker}`, `/briefing ${ticker}`] : []),
+    "Where is the market most wrong?",
+  ];
 
   return (
     <div className={`chat glass ${dock ? (open ? "open" : "collapsed") : ""}`} style={{ borderTop: `2px solid ${color}` }}>
       <div className="chat-head">
         <span className="dot" style={{ background: color }} aria-hidden="true" />
-        <span className="title">Chat with {agentName}{ticker ? ` · ${ticker}` : ""}</span>
+        <span className="title">
+          Office · {agentName}
+          {conversation?.title && <span className="faint" style={{ fontWeight: 400 }}> · {conversation.title}</span>}
+        </span>
+        {messages.length > 0 && <button type="button" className="btn small" onClick={newConversation} title="Start a fresh conversation">New</button>}
         {voice.tts && (
           <div className="voice-toggles">
             <button type="button" className="btn small" aria-pressed={!!prefs.autoSpeak} onClick={() => setPrefs({ autoSpeak: !prefs.autoSpeak })}
@@ -129,7 +159,7 @@ export default function ChatPanel({ agentId, agentName, ticker, color, dock = fa
       </div>
       <div className="chat-log" ref={log} aria-live="polite">
         {messages.length === 0 && !busy && (
-          <div className="msg system">Ask about {ticker || "this coverage"}, or type /help for commands.</div>
+          <div className="msg system">Talk about anything: your coverage, a name, the market. Slash commands work too (/help).</div>
         )}
         {messages.map((m, i) => (
           <div key={i} className={`msg ${m.role}`}>
@@ -139,6 +169,17 @@ export default function ChatPanel({ agentId, agentName, ticker, color, dock = fa
         ))}
         {busy && <div className="msg agent typing" aria-label="Agent is typing"><span /><span /><span /></div>}
       </div>
+      {conversation?.insights?.length > 0 && (
+        <details className="insights">
+          <summary>Key insights ({conversation.insights.length}){conversation.trade_ideas?.length ? ` · trade ideas (${conversation.trade_ideas.length})` : ""}</summary>
+          <ul>{conversation.insights.map((x) => <li key={x}>{x}</li>)}</ul>
+          {conversation.trade_ideas?.length > 0 && (
+            <ul className="ideas">{conversation.trade_ideas.map((t, i) => (
+              <li key={i}><b>{[t.long && `long ${t.long}`, t.short && `short ${t.short}`].filter(Boolean).join(" / ")}</b>: {t.rationale}</li>
+            ))}</ul>
+          )}
+        </details>
+      )}
       {voiceNote && <div className="voice-note" role="alert">{voiceNote} <button className="btn small" onClick={() => setVoiceNote(null)}>OK</button></div>}
       <div className="chat-suggest">
         {suggestions.map((s) => <button key={s} className="btn small" onClick={() => send(s)} disabled={busy}>{s}</button>)}
@@ -149,7 +190,7 @@ export default function ChatPanel({ agentId, agentName, ticker, color, dock = fa
           value={text}
           onChange={(e) => setText(e.target.value)}
           onFocus={() => dock && setOpen(true)}
-          placeholder={ticker ? `Ask about ${ticker} or type /help` : "Type /help"}
+          placeholder={`Talk to ${agentName.replace(/ (Analyst|Strategist)$/, "")} about anything`}
           aria-label="Message the agent"
           enterKeyHint="send"
           autoComplete="off"

@@ -374,6 +374,11 @@ LINE_CHARS = 420  # keep each spoken turn short; the full text is in the minutes
 
 def meeting_script(meeting_id: int, transcript: dict, minutes_md: str | None) -> list[dict]:
     """Turn a meeting transcript into spoken turns: [{speaker, agent_key, round, text}]."""
+    if (transcript or {}).get("turns"):  # daily research town hall: turns were recorded as spoken
+        intro = {"speaker": "Chair", "agent_key": "chair", "round": "open",
+                 "text": f"Welcome to research town hall number {meeting_id}. Rundowns first: Macro, then AI, Internet Platforms and Fintech."}
+        return [intro] + [{"speaker": t["speaker"], "agent_key": t["agent_key"], "round": t["round"], "text": t["text"],
+                           "meta": t.get("meta") or {}} for t in transcript["turns"]]
     lines: list[dict] = []
 
     def say(agent_key: str, speaker: str, rnd: str, text: str) -> None:

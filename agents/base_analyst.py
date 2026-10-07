@@ -32,6 +32,7 @@ from agents import llm
 from agents.coverage_files import read_file, refresh_files
 from agents.financial_model import ModelInputError, ModelInputs, compute_model, describe_for_claude
 from agents.llm import AnalystError
+from agents.philosophy import framework_block
 from agents.registry import FOCUS_METRICS, TickerContext, get_context
 from agents.research_format import ResearchWriteup, build_research_record
 from agents.thesis import analyst_lessons, current_thesis, pod_snapshot, save_thesis
@@ -124,7 +125,8 @@ MODEL_GUIDE = """Financial model conventions (match the PM's BLSH / PUBM workboo
 - Next print: estimate the next reported quarter against company guidance and explain the gap."""
 
 THESIS_GUIDE = """Trading thesis (the active position view the PM manages day to day):
-- Position long/short/flat with a signal and a one-line headline ("Good entry point at $X", "Risk levels increasing", "Time to short").
+- A trade, not a rating: the narrative, what the market is missing (market_missing) and the trade structure that isolates it (trade_structure: pair or hedge leg to strip out beta, or no_trade when there is no edge).
+- Position long/short/flat with a position-management action and a one-line headline ("Market is missing X; long vs. Y", "Edge gone, step aside").
 - Entry zone, target and stop anchored to the computed valuation (DCF, comps, scenario prices) and to where the stock trades now. Levels must be coherent with the position.
 - Cross-ticker dependencies: name specific linkages to other names in the pod (see the pod snapshot) or outside it."""
 
@@ -152,6 +154,8 @@ Your analyst focus: {ctx.analyst_focus}
 You report to a portfolio manager. You get fresh data (SEC filings, XBRL financials, market data, comps, news), your previous research and trading thesis, notes from the pod's meetings, and lessons you have taken from them. You produce a financial model, a research memo (a 2-3 page long-form memo plus a 1-2 paragraph executive summary: the 30-second thesis, why it matters now, the key number), the company background, and the trading thesis.
 
 What the portfolio manager cares about most: {", ".join(FOCUS_METRICS)}. Address each one explicitly.
+
+{framework_block()}
 Ticker focus: {ctx.focus_notes or 'n/a'}
 Competitors / peers: {competitors}
 

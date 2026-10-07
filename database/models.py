@@ -144,6 +144,7 @@ class Meeting(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     trigger: Mapped[str] = mapped_column(String(20))  # scheduled | manual
+    mode: Mapped[str | None] = mapped_column(String(20), nullable=True, default="daily")  # daily research town hall
     status: Mapped[str] = mapped_column(String(20), default="running")  # running | done | failed
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -242,6 +243,7 @@ class StrategySession(Base):
     __tablename__ = "strategy_sessions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mode: Mapped[str | None] = mapped_column(String(20), nullable=True, default="strategy")  # strategy | research
     status: Mapped[str] = mapped_column(String(20), default="thinking")  # thinking | awaiting_user | done | closed
     phase: Mapped[str] = mapped_column(String(20), default="context")  # context | discussion | memo | done
     progress: Mapped[str | None] = mapped_column(String(200), nullable=True)  # who is talking right now
@@ -255,3 +257,75 @@ class StrategySession(Base):
     memo_md: Mapped[str] = mapped_column(Text, default="")
     signoffs: Mapped[list] = mapped_column(JSON, default=list)
     revisions: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class Rundown(Base):
+    """An analyst's market rundown at a daily research town hall."""
+    __tablename__ = "rundowns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    meeting_id: Mapped[int] = mapped_column(ForeignKey("meetings.id"), index=True)
+    analyst_key: Mapped[str] = mapped_column(String(50))
+    analyst_name: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    spoken: Mapped[str] = mapped_column(Text)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)  # observations, thesis updates, macro shifts
+
+
+class Pitch(Base):
+    """A trade idea pitched at a town hall (daily or research conversation), with the discussion it drew."""
+    __tablename__ = "pitches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    meeting_id: Mapped[int | None] = mapped_column(ForeignKey("meetings.id"), nullable=True, index=True)
+    session_id: Mapped[int | None] = mapped_column(ForeignKey("strategy_sessions.id"), nullable=True, index=True)
+    analyst_key: Mapped[str] = mapped_column(String(50))
+    analyst_name: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    title: Mapped[str] = mapped_column(String(300))
+    long_ticker: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    short_ticker: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    structure: Mapped[str] = mapped_column(String(30))
+    conviction: Mapped[int] = mapped_column(Integer)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)  # narrative, market_missing, data points, catalysts, news, charts
+    discussion: Mapped[list] = mapped_column(JSON, default=list)  # colleagues' comments + the pitcher's response
+
+
+class Memo(Base):
+    """An auto-generated research memo (daily town hall, research conversation, strategy session)."""
+    __tablename__ = "memos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(30))  # town_hall | research | strategy
+    meeting_id: Mapped[int | None] = mapped_column(ForeignKey("meetings.id"), nullable=True, index=True)
+    session_id: Mapped[int | None] = mapped_column(ForeignKey("strategy_sessions.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    title: Mapped[str] = mapped_column(String(300))
+    memo_md: Mapped[str] = mapped_column(Text)
+
+
+class ResearchCharter(Base):
+    """The PM's research charter from a strategy session; the active one is injected into every agent prompt."""
+    __tablename__ = "research_charters"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[int | None] = mapped_column(ForeignKey("strategy_sessions.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    title: Mapped[str] = mapped_column(String(300))
+    directives: Mapped[list] = mapped_column(JSON, default=list)
+    charter_md: Mapped[str] = mapped_column(Text)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class OfficeConversation(Base):
+    """A one-on-one conversation with an analyst in its office: transcript, key insights, trade ideas."""
+    __tablename__ = "office_conversations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    analyst_key: Mapped[str] = mapped_column(String(50), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    title: Mapped[str] = mapped_column(String(300), default="")
+    messages: Mapped[list] = mapped_column(JSON, default=list)
+    insights: Mapped[list] = mapped_column(JSON, default=list)
+    trade_ideas: Mapped[list] = mapped_column(JSON, default=list)

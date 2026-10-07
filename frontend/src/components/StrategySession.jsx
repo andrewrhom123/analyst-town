@@ -4,6 +4,7 @@ import { timeAgo } from "../format.js";
 import { speak, stopSpeaking, useVoicePrefs, useVoiceStatus } from "../voice/voice.js";
 import AudioPlayer from "./AudioPlayer.jsx";
 import Markdown from "./Markdown.jsx";
+import PitchCard from "./PitchCard.jsx";
 import VoiceInput from "./VoiceInput.jsx";
 
 const STEPS = [["context", "Market context"], ["strategy", "Your strategy"], ["discussion", "Alignment"], ["memo", "Memo & sign-off"]];
@@ -11,8 +12,12 @@ const KIND = {
   context: { label: "Market context", cls: "context" },
   aligned: { label: "Aligned", cls: "aligned" },
   question: { label: "Question", cls: "question" },
-  memo: { label: "Strategy memo", cls: "memo" },
+  memo: { label: "Memo", cls: "memo" },
   signoff: { label: "Signed off", cls: "aligned" },
+  observation: { label: "Observation", cls: "context" },
+  pitch: { label: "Pitch", cls: "memo" },
+  agree: { label: "Agrees", cls: "aligned" },
+  disagree: { label: "Disagrees", cls: "question" },
 };
 const clipId = (sid, m) => `strategy-${sid}-${m.id}`;
 
@@ -25,9 +30,11 @@ function stepIndex(s) {
 }
 
 /**
- * All-hands strategy session: macro sets the scene, the PM gives the strategy (typed or spoken), the pod aligns
- * or questions it, then everyone signs a memo and re-states their theses. New agent turns are read aloud in
- * each agent's voice, one at a time; `onSpeaking` reports the line being spoken (for boardroom captions).
+ * Ad-hoc town hall, two modes. Strategy session: macro sets the scene, the PM gives the strategy (typed or
+ * spoken), the pod aligns or questions it, then everyone signs the research charter and re-states their theses.
+ * Research conversation: broad questions; each analyst answers with observations, pitches and reactions; the
+ * chair wraps up with a research memo. New agent turns are read aloud in each agent's voice, one at a time;
+ * `onSpeaking` reports the line being spoken (for boardroom captions).
  */
 export default function StrategySession({ agents, onSpeaking }) {
   const [session, setSession] = useState(null);
@@ -37,6 +44,7 @@ export default function StrategySession({ agents, onSpeaking }) {
   const [error, setError] = useState(null);
   const [text, setText] = useState("");
   const [handsFree, setHandsFree] = useState(false);
+  const [charter, setCharter] = useState(null);
   const [prefs, setPrefs] = useVoicePrefs();
   const voice = useVoiceStatus();
   const autoSpeak = voice.tts && prefs.strategyVoice !== false; // on by default for sessions
@@ -93,6 +101,7 @@ export default function StrategySession({ agents, onSpeaking }) {
       .catch((e) => alive && e.status !== 404 && setError(e.message))
       .finally(() => alive && setLoaded(true));
     api.strategySessions().then((rows) => alive && setPast(rows)).catch(() => {});
+    api.charter().then((c) => alive && setCharter(c)).catch(() => {});
     return () => { alive = false; queue.current.length = 0; stopSpeaking(); };
   }, []);
 
@@ -118,10 +127,10 @@ export default function StrategySession({ agents, onSpeaking }) {
     }
   };
 
-  const start = () => act(async () => {
+  const start = (mode) => act(async () => {
     stopSpeaking();
-    const s = await api.strategyStart();
-    setPast((p) => [{ session_id: s.session_id, status: s.status, started_at: s.started_at, strategy: "", memo_title: "" }, ...p]);
+    const s = await api.strategyStart(mode);
+    setPast((p) => [{ session_id: s.session_id, mode, status: s.status, started_at: s.started_at, strategy: "", memo_title: "" }, ...p]);
     return s;
   });
   const send = (raw) => {
@@ -132,16 +141,27 @@ export default function StrategySession({ agents, onSpeaking }) {
     queue.current.length = 0;
     act(() => api.strategySay(session.session_id, value));
   };
-  const finalize = () => act(() => api.strategyFinalize(session.session_id));
+  const finalize = () => act(async () => {
+    const s = await api.strategyFinalize(session.session_id);
+    if (s.mode === "strategy") setTimeout(() => api.charter().then(setCharter).catch(() => {}), 1000);
+    return s;
+  });
+  useEffect(() => {
+    if (session?.mode === "strategy" && session.phase === "done") api.charter().then(setCharter).catch(() => {});
+  }, [session?.phase, session?.mode]);
   const close = () => act(() => api.strategyClose(session.session_id));
   const open = (id) => act(async () => { const s = await api.strategy(id); markAllSpoken(s); return s; });
 
   const active = session && (session.status === "thinking" || session.status === "awaiting_user");
+  const research = session?.mode === "research";
   const step = stepIndex(session);
+  const owners = Object.fromEntries(agents.flatMap((a) => a.tickers.map((t) => [t.symbol, a.key])));
   const openNames = (session?.open_questions || []).map((k) => byKey[k]?.name?.replace(/ (Analyst|Strategist)$/, "") || k);
-  const placeholder = !session?.strategy
-    ? "Set the pod's strategy, e.g. lean into quality and cut high-beta into year end"
-    : openNames.length ? `Answer ${openNames.join(" and ")}…` : "Add to the strategy, or generate the memo";
+  const placeholder = research
+    ? "Ask the pod anything, e.g. where do you see the biggest market mispricing?"
+    : !session?.strategy
+      ? "Set the research direction, e.g. focus on idiosyncratic fundamentals; find long/short pairs that avoid beta"
+      : openNames.length ? `Answer ${openNames.join(" and ")}…` : "Add to the strategy, or generate the charter";
 
   if (!loaded) return <section className="section glass"><div className="skeleton" style={{ height: 120 }} /></section>;
 
@@ -149,7 +169,7 @@ export default function StrategySession({ agents, onSpeaking }) {
     <div className="strategy">
       <section className="section glass">
         <div className="strategy-head">
-          <h3 style={{ margin: 0 }}>All-hands strategy session</h3>
+          <h3 style={{ margin: 0 }}>{active ? (research ? "Research conversation" : "Strategy session") : "Ad-hoc town hall"}</h3>
           {voice.tts && (
             <div className="voice-toggles">
               <button type="button" className="btn small" aria-pressed={autoSpeak} onClick={() => setPrefs({ strategyVoice: !autoSpeak })}>🔊 Voices</button>
@@ -162,16 +182,29 @@ export default function StrategySession({ agents, onSpeaking }) {
             </div>
           )}
         </div>
+        {charter && (
+          <details className="context-card" style={{ marginTop: 10 }}>
+            <summary><b>Research charter in force:</b> {charter.title}</summary>
+            <ul className="list">{charter.directives.map((d) => <li key={d}>{d}</li>)}</ul>
+          </details>
+        )}
         {!active ? (
-          <>
-            <p className="muted" style={{ marginTop: 8 }}>
-              Macro opens with the market backdrop (rates, the Fed, sentiment, beta). Then you set the strategy, typed or
-              spoken. Each analyst aligns or respectfully questions it with data, you go back and forth, and the pod
-              signs a strategy memo and updates every thesis to match. About $1.
-            </p>
-            <button className="btn primary" onClick={start} disabled={busy}>{busy ? "Calling the pod in…" : "Start a strategy session"}</button>
-          </>
-        ) : (
+          <div className="mode-pick">
+            <div>
+              <h4>Strategy session</h4>
+              <p className="muted">Reset the research direction. Macro opens with the backdrop (rates, the Fed, sentiment, beta); you set
+                the directives; each analyst aligns or questions with data; the pod signs a <b>Research Charter</b> every agent follows from
+                then on, and updates its theses. About $1.</p>
+              <button className="btn primary" onClick={() => start("strategy")} disabled={busy}>Start a strategy session</button>
+            </div>
+            <div>
+              <h4>Research conversation</h4>
+              <p className="muted">Ask the pod broad questions ("what's the most interesting stock you cover?", "where's the biggest
+                mispricing?"). Each analyst answers, pitches trades and reacts to colleagues; wrap up for a research memo. ~$0.40 a question.</p>
+              <button className="btn primary" onClick={() => start("research")} disabled={busy}>Start a research conversation</button>
+            </div>
+          </div>
+        ) : !research && (
           <ol className="steps" aria-label="Session progress">
             {STEPS.map(([key, label], i) => <li key={key} className={i < step ? "done" : i === step ? "now" : ""}>{label}</li>)}
           </ol>
@@ -182,7 +215,7 @@ export default function StrategySession({ agents, onSpeaking }) {
       {session && (
         <section className="section glass">
           <div className="faint" style={{ fontSize: 12, marginBottom: 8 }}>
-            Session #{session.session_id} · {session.status === "closed" ? "closed" : session.phase === "done" ? "complete" : session.status === "thinking" ? "in progress" : "your turn"} · started {timeAgo(session.started_at)}
+            {research ? "Research conversation" : "Strategy session"} #{session.session_id} · {session.status === "closed" ? "closed" : session.phase === "done" ? "complete" : session.status === "thinking" ? "in progress" : "your turn"} · started {timeAgo(session.started_at)}
           </div>
           {session.market_context?.headline && (
             <details className="context-card">
@@ -196,7 +229,7 @@ export default function StrategySession({ agents, onSpeaking }) {
             {session.messages.map((m) => {
               const kind = KIND[m.kind];
               if (m.role === "system") return <li key={m.id} className="turn system">{m.text}</li>;
-              if (m.role === "user") return <li key={m.id} className="turn user"><b>You{m.kind === "strategy" ? " · strategy" : ""}</b><p>{m.text}</p></li>;
+              if (m.role === "user") return <li key={m.id} className="turn user"><b>You{m.kind === "strategy" && !research ? " · strategy" : ""}</b><p>{m.text}</p></li>;
               return (
                 <li key={m.id} className="turn agent" style={{ "--c": color(m.agent_key) }}>
                   <div className="turn-head">
@@ -210,6 +243,9 @@ export default function StrategySession({ agents, onSpeaking }) {
                     <div className="ticker-chips">{m.meta.implications.map((x) => <span key={x.ticker} className="chip" title={x.implication}>{x.ticker}: {x.implication}</span>)}</div>
                   )}
                   {m.kind === "signoff" && m.meta.reservations && <p className="faint" style={{ fontSize: 13 }}>Reservation: {m.meta.reservations}</p>}
+                  {m.meta?.references?.length > 0 && <ul className="conflicts refs">{m.meta.references.map((r) => <li key={r}>{r}</li>)}</ul>}
+                  {m.meta?.pitch && <PitchCard pitch={m.meta.pitch} color={color(m.agent_key)} owners={owners} />}
+                  {m.kind === "memo" && m.meta?.directives?.length > 0 && <ul className="list">{m.meta.directives.map((d) => <li key={d}>{d}</li>)}</ul>}
                 </li>
               );
             })}
@@ -229,8 +265,8 @@ export default function StrategySession({ agents, onSpeaking }) {
               </form>
               <div className="board-controls" style={{ marginTop: 10 }}>
                 <button className="btn" onClick={finalize} disabled={busy || session.status !== "awaiting_user" || !session.strategy}
-                  title={openNames.length ? `${openNames.join(", ")} still ${openNames.length > 1 ? "have" : "has"} a question; the memo will record it as dissent` : undefined}>
-                  ✍ Generate strategy memo{openNames.length ? ` (${openNames.length} open question${openNames.length > 1 ? "s" : ""})` : ""}
+                  title={openNames.length ? `${openNames.join(", ")} still ${openNames.length > 1 ? "have" : "has"} a question; the charter will record it as dissent` : undefined}>
+                  {research ? "✍ Wrap up: research memo" : `✍ Generate research charter${openNames.length ? ` (${openNames.length} open question${openNames.length > 1 ? "s" : ""})` : ""}`}
                 </button>
                 <button className="btn" onClick={close} disabled={busy || session.status !== "awaiting_user"}>Close without memo</button>
               </div>
@@ -242,7 +278,7 @@ export default function StrategySession({ agents, onSpeaking }) {
       {session?.memo_md && (
         <section className="section glass">
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-            <h3 style={{ margin: 0 }}>{session.memo_title || "Strategy memo"}</h3>
+            <h3 style={{ margin: 0 }}>{research ? "Research memo" : "Research charter"}: {session.memo_title}</h3>
             <AudioPlayer text={session.memo_md} agent="chair" color="#a855f7" label="Read memo" />
           </div>
           <Markdown>{session.memo_md}</Markdown>
@@ -288,7 +324,7 @@ export default function StrategySession({ agents, onSpeaking }) {
             {past.filter((p) => p.session_id !== session?.session_id).map((p) => (
               <li key={p.session_id}>
                 <button type="button" className="btn small" onClick={() => open(p.session_id)}>#{p.session_id}</button>
-                <span>{p.memo_title || p.strategy || "(no strategy set)"}</span>
+                <span>{p.mode === "research" ? "🔎 " : "🧭 "}{p.memo_title || p.strategy || "(nothing asked yet)"}</span>
                 <span className="faint">{timeAgo(p.started_at)}</span>
               </li>
             ))}

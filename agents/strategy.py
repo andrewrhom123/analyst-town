@@ -1,6 +1,12 @@
-"""All-hands strategy session: the PM sets the pod's strategy and the analysts align to it (light model).
+"""Ad-hoc town halls, started by the PM (light model). Two modes:
 
-Flow (each step runs in the background; every agent turn is stored the moment it is spoken):
+STRATEGY SESSION (mode "strategy"): reset the pod's research direction. The memo becomes the Research Charter
+that every agent prompt follows until the next strategy session replaces it.
+RESEARCH CONVERSATION (mode "research"): broad questions ("where's the biggest mispricing?"); every analyst
+answers in turn with observations, pitches and agreement/disagreement with colleagues; wrapping up writes a
+research memo. Pitches land in the pitches table.
+
+Strategy flow (each step runs in the background; every agent turn is stored the moment it is spoken):
   1. Context  - the macro strategist opens with the market backdrop: rates, the Fed, sentiment, beta.
   2. Strategy - the PM types or speaks a strategy. Every analyst replies: "aligned" (with what it means
                 for their names) or "question" (a respectful challenge citing the conflicting data).
@@ -22,12 +28,13 @@ from sqlalchemy import select
 
 from agents import llm
 from agents.coverage_files import refresh_files
-from agents.meeting import Revision, _board
+from agents.meeting import PitchOut, Revision, _board, headlines, speaking_order
+from agents.philosophy import framework_block
 from agents.registry import FOCUS_METRICS, get_context
 from agents.thesis import save_thesis
 from data_sources.cache import get_cached
 from database.db import session_scope
-from database.models import StrategySession
+from database.models import Memo, Pitch, ResearchCharter, StrategySession
 from utils import config
 
 logger = logging.getLogger(__name__)
@@ -69,10 +76,27 @@ class AgentReply(BaseModel):
 
 
 class StrategyMemo(BaseModel):
-    title: str
-    memo_md: str = Field(description="Markdown memo for the PM and the pod: ## Strategy, ## Market context, "
-                                     "## Positioning by desk, ## Guardrails and risks, ## Dissent and open questions")
+    title: str = Field(description="The research charter's title")
+    memo_md: str = Field(description="Markdown research charter for the PM and the pod: ## Strategy, ## Market context, "
+                                     "## Research directives, ## Positioning by desk, ## Guardrails and risks, ## Dissent and open questions")
+    directives: list[str] = Field(description="3-7 crisp directives every analyst will apply to all future research, "
+                                              "e.g. 'Prefer idiosyncratic long/short pairs that net out sector beta'")
     spoken_summary: str = Field(description="3-4 sentences the chair reads aloud to close the session. " + SPOKEN)
+
+
+class ResearchReply(BaseModel):
+    kind: Literal["observation", "pitch", "agree", "disagree"] = Field(
+        description="pitch only with a concrete trade; agree/disagree when reacting mainly to a colleague")
+    spoken: str = Field(description="2-5 sentences answering the PM, reacting to colleagues where useful. " + SPOKEN)
+    references: list[str] = Field(description="The data behind what you said, with numbers")
+    pitch: PitchOut | None = Field(description="Your trade idea when kind is pitch; otherwise null")
+
+
+class ResearchMemo(BaseModel):
+    title: str
+    memo_md: str = Field(description="Markdown research memo: ## Questions asked, ## What the pod sees, ## Trade ideas "
+                                     "(structure, edge, catalysts, conviction, pushback), ## What the market is missing, ## Follow-ups")
+    spoken_summary: str = Field(description="3-4 sentences the chair reads aloud to close. " + SPOKEN)
 
 
 class SignOff(BaseModel):
@@ -114,11 +138,11 @@ def _say(session_id: int, role: str, kind: str, text: str, *, agent_key: str | N
 
 def serialize(row: StrategySession) -> dict:
     return {
-        "session_id": row.id, "status": row.status, "phase": row.phase, "progress": row.progress,
+        "session_id": row.id, "mode": row.mode or "strategy", "status": row.status, "phase": row.phase, "progress": row.progress,
         "started_at": _aware(row.started_at).isoformat(), "finished_at": _aware(row.finished_at).isoformat() if row.finished_at else None,
         "strategy": row.strategy, "messages": row.messages or [], "market_context": row.market_context or {},
         "memo_title": row.memo_title, "memo_md": row.memo_md, "signoffs": row.signoffs or [], "revisions": row.revisions or [],
-        "open_questions": open_questions(row.messages or []),
+        "open_questions": open_questions(row.messages or []) if (row.mode or "strategy") == "strategy" else [],
     }
 
 
@@ -149,7 +173,7 @@ def latest_session() -> dict | None:
 def list_sessions(limit: int = 20) -> list[dict]:
     with session_scope() as s:
         rows = s.scalars(select(StrategySession).order_by(StrategySession.started_at.desc()).limit(limit)).all()
-        return [{"session_id": r.id, "status": r.status, "phase": r.phase, "started_at": _aware(r.started_at).isoformat(),
+        return [{"session_id": r.id, "mode": r.mode or "strategy", "status": r.status, "phase": r.phase, "started_at": _aware(r.started_at).isoformat(),
                  "strategy": r.strategy[:200], "memo_title": r.memo_title, "turns": len(r.messages or [])} for r in rows]
 
 
@@ -205,6 +229,11 @@ def _transcript(messages: list[dict]) -> list[dict]:
         entry = {"speaker": m["speaker"] or "PM", "kind": m["kind"], "said": m["text"]}
         if m["meta"].get("conflicts"):
             entry["conflicts"] = m["meta"]["conflicts"]
+        if m["meta"].get("pitch"):
+            entry["pitch"] = {k: m["meta"]["pitch"].get(k) for k in ("title", "long_ticker", "short_ticker", "structure",
+                                                                    "market_missing", "data_points", "catalysts", "conviction")}
+        if m["meta"].get("references"):
+            entry["data"] = m["meta"]["references"]
         out.append(entry)
     return out
 
@@ -215,7 +244,14 @@ def _analyst_system(a: dict) -> str:
             f"{', '.join(FOCUS_METRICS)} and actionable position management.\n"
             "The PM sets the strategy; your job is to make it work for your names. Align by default. Question only "
             "when specific data you were given conflicts with it, and then do it respectfully, citing the numbers. "
-            "Never invent data.")
+            "Never invent data.\n\n" + framework_block())
+
+
+def _research_system(a: dict) -> str:
+    return (f"You are {a['analyst']} ({a['agent_type']} analyst) in an ad-hoc research town hall the PM called in the "
+            f"boardroom. You cover: {', '.join(a['tickers'])}. The PM is asking broad questions, not always about specific "
+            "stocks. Answer with your real view, bring data, pitch a trade if you have edge, and react to colleagues: "
+            "agree, disagree or build. Peer research, not hierarchy. Never invent data.\n\n" + framework_block())
 
 
 def _dump(obj) -> str:
@@ -224,13 +260,21 @@ def _dump(obj) -> str:
 
 # --- Steps ----------------------------------------------------------------------------------------
 
-def start_session() -> int:
+def start_session(mode: str = "strategy") -> int:
+    if mode not in ("strategy", "research"):
+        raise SessionError("Mode must be strategy or research")
     llm.require_budget("strategy", 0.1)
     with session_scope() as s:
         active = s.scalar(select(StrategySession.id).where(StrategySession.status.in_(["thinking", "awaiting_user"])).limit(1))
         if active:
             raise SessionError(f"Strategy session #{active} is still open. Finish or close it first.")
-        row = StrategySession(status="thinking", phase="context", progress="Macro is reading the tape", messages=[])
+        if mode == "research":  # no opening briefing: the floor is the PM's
+            row = StrategySession(mode="research", status="awaiting_user", phase="discussion", messages=[{
+                "id": 1, "role": "agent", "kind": "open", "agent_key": "chair", "speaker": "Chair", "meta": {},
+                "text": "The whole pod is here. Ask us anything: what's interesting, where the market is wrong, what you'd do.",
+                "ts": _now().isoformat()}])
+        else:
+            row = StrategySession(mode="strategy", status="thinking", phase="context", progress="Macro is reading the tape", messages=[])
         s.add(row)
         s.flush()
         return row.id
@@ -269,13 +313,24 @@ def post_message(session_id: int, text: str) -> None:
     llm.require_budget("strategy", estimate)
     _say(session_id, "user", "strategy" if first else "reply", text, speaker="PM")
     fields = {"status": "thinking", "phase": "discussion", "progress": "The pod is considering your strategy"}
+    if session_mode(session_id) == "research":
+        fields["progress"] = "The pod is thinking about your question"
     if first:
         fields["strategy"] = text
     _update(session_id, **fields)
 
 
+def session_mode(session_id: int) -> str:
+    with session_scope() as s:
+        row = s.get(StrategySession, session_id)
+        return (row.mode or "strategy") if row else "strategy"
+
+
 def run_replies(session_id: int) -> None:
     """Steps 2-3: analysts reply to the PM. After the first round, only those with open questions."""
+    if session_mode(session_id) == "research":
+        return run_research_replies(session_id)
+
     def step():
         session = get_session(session_id)
         pod = _pod()
@@ -302,6 +357,41 @@ def run_replies(session_id: int) -> None:
     _guard(session_id, step)
 
 
+def run_research_replies(session_id: int) -> None:
+    """Research conversation: every analyst answers the PM's question in speaking order, hearing colleagues first."""
+    def step():
+        pod = _pod()
+        for key in speaking_order(pod):
+            a = pod[key]
+            if not a["tickers"]:
+                continue
+            _update(session_id, progress=f"{a['analyst']} is answering")
+            messages = get_session(session_id)["messages"]
+            mine = {sym: {k: t.get(k) for k in ("name", "price", "beta", "thesis")} for sym, t in a["tickers"].items()}
+            payload = {"your_names": mine, "headlines": headlines(list(a["tickers"]), per_ticker=3)}
+            out, _ = llm.parse_call(
+                "strategy", ResearchReply, _research_system(a),
+                [{"role": "user", "content": f"<your_book>\n{_dump(payload)}\n</your_book>\n"
+                  f"<conversation_so_far>\n{_dump(_transcript(messages))}\n</conversation_so_far>\n\n"
+                  "Answer the PM's latest question; react to colleagues who already spoke where it adds something."}],
+            )
+            meta = {"references": out.references}
+            if out.pitch:
+                p = out.pitch
+                allowed = {h["url"] for hs in payload["headlines"].values() for h in hs if h.get("url")}
+                p.news = [n for n in p.news if n.url in allowed]
+                with session_scope() as s:
+                    row = Pitch(session_id=session_id, analyst_key=key, analyst_name=a["analyst"], title=p.title,
+                                long_ticker=p.long_ticker, short_ticker=p.short_ticker, structure=p.structure,
+                                conviction=max(1, min(10, p.conviction)), data=p.model_dump(), discussion=[])
+                    s.add(row)
+                    s.flush()
+                    meta["pitch"] = {"db_id": row.id, **p.model_dump()}
+            _say(session_id, "agent", "pitch" if out.pitch else out.kind, out.spoken, agent_key=key, speaker=a["analyst"], meta=meta)
+        _update(session_id, status="awaiting_user", progress=None)
+    _guard(session_id, step)
+
+
 def begin_finalize(session_id: int) -> None:
     with session_scope() as s:
         row = s.get(StrategySession, session_id)
@@ -310,27 +400,38 @@ def begin_finalize(session_id: int) -> None:
         if row.status != "awaiting_user":
             raise SessionError("The pod is still talking" if row.status == "thinking" else "This session is finished")
         if not row.strategy:
-            raise SessionError("Set a strategy first")
-    llm.require_budget("strategy", 0.15 + 0.2 * len(_board()))
-    _update(session_id, status="thinking", phase="memo", progress="The chair is drafting the strategy memo")
+            raise SessionError("Ask the pod something first" if row.mode == "research" else "Set a strategy first")
+        research = row.mode == "research"
+    llm.require_budget("strategy", 0.15 if research else 0.15 + 0.2 * len(_board()))
+    _update(session_id, status="thinking", phase="memo",
+            progress="The chair is writing the research memo" if research else "The chair is drafting the research charter")
 
 
 def run_finalize(session_id: int) -> None:
     """Step 4: strategy memo, sign-offs, and every analyst's theses re-stated under the new strategy."""
+    if session_mode(session_id) == "research":
+        return run_research_memo(session_id)
+
     def step():
         session = get_session(session_id)
         pod = _pod()
         transcript = _transcript(session["messages"])
         memo, _ = llm.parse_call(
             "strategy", StrategyMemo,
-            "You chair the research pod's all-hands strategy session and write the strategy memo every analyst will "
-            "sign. Capture the PM's strategy faithfully, the market context, what each desk will do, guardrails, and "
-            "any dissent that remains. Crisp, specific, no filler.",
+            "You chair the research pod's strategy session and write the Research Charter every analyst will sign and "
+            "apply to all future research. Capture the PM's strategy faithfully as concrete research directives, plus "
+            "the market context, what each desk will do, guardrails, and any dissent that remains. Crisp, no filler.",
             [{"role": "user", "content": f"<market_context>\n{_dump(session['market_context'])}\n</market_context>\n"
               f"<session>\n{_dump(transcript)}\n</session>\n\nWrite the strategy memo."}],
         )
         _update(session_id, memo_title=memo.title, memo_md=memo.memo_md)
-        _say(session_id, "agent", "memo", memo.spoken_summary, agent_key="chair", speaker="Chair", meta={"title": memo.title})
+        with session_scope() as s:  # the memo becomes the research charter every agent follows from now on
+            for old in s.scalars(select(ResearchCharter).where(ResearchCharter.active.is_(True))):
+                old.active = False
+            s.add(ResearchCharter(session_id=session_id, title=memo.title, directives=memo.directives, charter_md=memo.memo_md, active=True))
+            s.add(Memo(kind="strategy", session_id=session_id, title=memo.title, memo_md=memo.memo_md))
+        _say(session_id, "agent", "memo", memo.spoken_summary, agent_key="chair", speaker="Chair",
+             meta={"title": memo.title, "directives": memo.directives})
 
         signoffs, revisions = [], []
         for key, a in pod.items():
@@ -338,8 +439,8 @@ def run_finalize(session_id: int) -> None:
             mine = {sym: {k: t.get(k) for k in ("name", "price", "beta", "thesis")} for sym, t in a["tickers"].items()}
             out, message = llm.parse_call(
                 "strategy", SignOff, _analyst_system(a),
-                [{"role": "user", "content": f"<strategy_memo>\n{memo.memo_md}\n</strategy_memo>\n<your_names>\n{_dump(mine)}\n"
-                  f"</your_names>\n\nSign off on the memo, then give one revision per ticker you cover so each thesis "
+                [{"role": "user", "content": f"<research_charter>\n{memo.memo_md}\n</research_charter>\n<your_names>\n{_dump(mine)}\n"
+                  f"</your_names>\n\nSign off on the charter, then give one revision per ticker you cover so each thesis "
                   "reflects the new strategy (revise only where it changes the call; repeat it unchanged otherwise)."}],
                 max_tokens=SIGNOFF_MAX_TOKENS,
             )
@@ -364,6 +465,25 @@ def run_finalize(session_id: int) -> None:
                  meta={"signed": out.signed, "reservations": out.reservations, "revised": changed})
         _update(session_id, status="done", phase="done", progress=None, finished_at=_now())
     _guard(session_id, step, retry_hint="Generate the memo again to retry.")
+
+
+def run_research_memo(session_id: int) -> None:
+    """Research conversation wrap-up: the chair's research memo (also stored in memos)."""
+    def step():
+        session = get_session(session_id)
+        memo, _ = llm.parse_call(
+            "strategy", ResearchMemo,
+            "You chair the pod's ad-hoc research town hall and write the research memo the PM reviews afterwards: the "
+            "questions, what each analyst sees, every trade idea with its structure, edge, catalysts, conviction and "
+            "pushback, what the market is missing, and follow-ups. Trades and narrative, never ratings.\n\n" + framework_block(),
+            [{"role": "user", "content": f"<conversation>\n{_dump(_transcript(session['messages']))}\n</conversation>\n\nWrite the research memo."}],
+        )
+        with session_scope() as s:
+            s.add(Memo(kind="research", session_id=session_id, title=memo.title, memo_md=memo.memo_md))
+        _update(session_id, memo_title=memo.title, memo_md=memo.memo_md)
+        _say(session_id, "agent", "memo", memo.spoken_summary, agent_key="chair", speaker="Chair", meta={"title": memo.title})
+        _update(session_id, status="done", phase="done", progress=None, finished_at=_now())
+    _guard(session_id, step, retry_hint="Wrap up again to retry.")
 
 
 def close_session(session_id: int) -> None:

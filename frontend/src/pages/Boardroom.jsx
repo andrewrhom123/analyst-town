@@ -2,7 +2,9 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api/client.js";
 import AudioPlayer from "../components/AudioPlayer.jsx";
+import ArchivePanel from "../components/ArchivePanel.jsx";
 import Markdown from "../components/Markdown.jsx";
+import PitchCard from "../components/PitchCard.jsx";
 import StrategySession from "../components/StrategySession.jsx";
 import VoiceInput from "../components/VoiceInput.jsx";
 import { timeAgo } from "../format.js";
@@ -11,9 +13,13 @@ import { prefetch, speak, stopSpeaking, usePlayer, useVoiceStatus } from "../voi
 
 const BoardroomScene = lazy(() => import("../3d/BoardroomScene.jsx"));
 const CHAIR = { key: "chair", name: "Chair", color: "#a855f7" };
-const ROUNDS = { open: "Opening", challenges: "Round 1 · Challenges", responses: "Round 2 · Responses", close: "Minutes" };
+const ROUNDS = {
+  open: "Opening", rundown: "Rundowns", pitch: "Pitch", discussion: "Discussion", response: "Pitcher responds", memo: "Research memo",
+  challenges: "Round 1 · Challenges", responses: "Round 2 · Responses", close: "Minutes", // older meetings
+};
+const MODES = { meeting: "Daily town hall", adhoc: "Ad-hoc town hall", archive: "Archive" };
 
-/** Meeting state: latest minutes + spoken script; polls while a meeting is running. */
+/** Town hall state: turns as spoken, pitches, memo (older meetings: spoken script); polls fast while running. */
 function useMeeting() {
   const [meeting, setMeeting] = useState(null);
   const [script, setScript] = useState(null);
@@ -22,7 +28,7 @@ function useMeeting() {
     try {
       const m = await api.latestMeeting();
       setMeeting(m);
-      if (m.status === "done") setScript(await api.meetingScript());
+      if (m.status === "done" && !m.turns?.length) setScript(await api.meetingScript());
     } catch (e) {
       if (e.status !== 404) setError(e.message);
     }
@@ -30,15 +36,16 @@ function useMeeting() {
   useEffect(() => { load(); }, []);
   useEffect(() => {
     if (meeting?.status !== "running") return undefined;
-    const id = setInterval(load, 8000);
+    const id = setInterval(load, 4000);
     return () => clearInterval(id);
   }, [meeting?.status]);
   const start = async () => {
     setError(null);
     try {
       await api.meeting();
-      setMeeting({ status: "running", started_at: new Date().toISOString() });
-      setTimeout(load, 3000);
+      setScript(null); // the old meeting's script must not leak into the new one
+      setMeeting({ status: "running", started_at: new Date().toISOString(), turns: [], pitches: [] });
+      setTimeout(load, 2000);
     } catch (e) {
       setError(e.message);
     }
@@ -140,7 +147,9 @@ export default function Boardroom() {
   const laptop = useMediaQuery(LAPTOP_QUERY);
   const agents = usePolling(() => api.agents(), [], 60000);
   const { meeting, script, error, start } = useMeeting();
-  const lines = script?.lines || [];
+  const turnLines = (meeting?.turns || []).map((t) => ({ speaker: t.speaker, agent_key: t.agent_key, round: t.round, text: t.text, meta: t.meta }));
+  // Town halls record turns as spoken; only finished pre-town-hall meetings fall back to the generated script.
+  const lines = turnLines.length || meeting?.status !== "done" ? turnLines : script?.lines || [];
   const playback = usePlayback(lines);
   const player = usePlayer();
   const { tts, loaded } = useVoiceStatus();
@@ -148,14 +157,33 @@ export default function Boardroom() {
   const roster = agents.data || [];
   const byKey = Object.fromEntries([...roster.map((a) => [a.key, a]), [CHAIR.key, CHAIR]]);
   const [params, setParams] = useSearchParams();
-  const mode = params.get("mode") === "strategy" ? "strategy" : "meeting";
+  const raw = params.get("mode");
+  const mode = raw === "strategy" || raw === "adhoc" ? "adhoc" : raw === "archive" ? "archive" : "meeting";
+  const owners = Object.fromEntries(roster.flatMap((a) => a.tickers.map((t) => [t.symbol, a.key])));
+
+  // Listen live: while a town hall runs, play each new turn as it lands (joining mid-meeting starts at the current speaker).
+  const [listenLive, setListenLive] = useState(true);
+  const heard = useRef(null);
+  const running = meeting?.status === "running";
+  useEffect(() => {
+    if (heard.current === null && meeting) heard.current = running ? Math.max(-1, lines.length - 2) : lines.length - 1;
+  }, [meeting]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (playback.index > (heard.current ?? -1)) heard.current = playback.index;
+  }, [playback.index]);
+  useEffect(() => {
+    if (mode !== "meeting" || !running || !listenLive || !tts || playback.playing || heard.current === null) return;
+    if (lines.length - 1 > heard.current) playback.playFrom(heard.current + 1);
+  }, [lines.length, playback.playing, listenLive, running, mode, tts]); // eslint-disable-line react-hooks/exhaustive-deps
+  const startTownHall = () => { heard.current = -1; setListenLive(true); start(); };
+  const stopPlayback = () => { if (running) setListenLive(false); playback.stop(); };
   const [strategyLine, setStrategyLine] = useState(null);
-  const current = mode === "strategy" ? strategyLine : lines[playback.index];
+  const current = mode === "adhoc" ? strategyLine : mode === "meeting" ? lines[playback.index] : null;
   const speaker = player.status === "playing" ? player.agent : null;
   const switchMode = (next) => {
     if (next === mode) return;
     playback.stop();
-    setParams(next === "strategy" ? { mode: "strategy" } : {}, { replace: true });
+    setParams(next === "meeting" ? {} : { mode: next }, { replace: true });
   };
 
   useEffect(() => {
@@ -169,15 +197,17 @@ export default function Boardroom() {
   const controls = (
     <div className="board-controls">
       {playback.playing ? (
-        <button className="btn primary" onClick={playback.stop}>■ Stop</button>
+        <button className="btn primary" onClick={stopPlayback}>■ Stop</button>
+      ) : running && tts ? (
+        <button className="btn primary" onClick={() => { heard.current = Math.max(-1, lines.length - 2); setListenLive(true); }}>🔊 Listen live</button>
       ) : (
         <button className="btn primary" onClick={() => playback.playFrom(Math.max(0, playback.index))} disabled={!lines.length || !tts}>
-          ▶ {playback.index > 0 ? "Resume" : "Play the meeting"}
+          ▶ {playback.index > 0 ? "Resume" : "Play the town hall"}
         </button>
       )}
       <button className="btn" onClick={() => playback.playFrom(Math.max(0, playback.index - 1))} disabled={!lines.length || !tts || playback.index <= 0} aria-label="Previous speaker">⏮</button>
       <button className="btn" onClick={() => playback.playFrom(Math.min(lines.length - 1, playback.index + 1))} disabled={!lines.length || !tts} aria-label="Next speaker">⏭</button>
-      <button className="btn" onClick={start} disabled={meeting?.status === "running"}>{meeting?.status === "running" ? "Meeting in progress…" : "Start a new meeting"}</button>
+      <button className="btn" onClick={startTownHall} disabled={running}>{running ? "Town hall in progress…" : "Start a town hall now"}</button>
     </div>
   );
 
@@ -189,21 +219,23 @@ export default function Boardroom() {
         <div>
           <h1>Boardroom</h1>
           <div className="faint" style={{ fontSize: 12 }}>
-            {mode === "strategy" ? "All-hands strategy session" : meeting ? `Meeting #${meeting.meeting_id ?? "…"} · ${meeting.status} · ${timeAgo(meeting.finished_at || meeting.started_at)}` : "No meetings yet"}
+            {mode !== "meeting" ? MODES[mode] : meeting ? `Research town hall #${meeting.meeting_id ?? "…"} · ${meeting.status} · ${timeAgo(meeting.finished_at || meeting.started_at)}` : "Daily research town hall, 4:30pm ET"}
           </div>
         </div>
       </div>
       <div className="board-tabs glass" role="tablist" aria-label="Boardroom mode">
-        <button role="tab" aria-selected={mode === "meeting"} onClick={() => switchMode("meeting")}>Pod meeting</button>
-        <button role="tab" aria-selected={mode === "strategy"} onClick={() => switchMode("strategy")}>All-hands strategy</button>
+        {Object.entries(MODES).map(([key, label]) => (
+          <button key={key} role="tab" aria-selected={mode === key} onClick={() => switchMode(key)}>{label}</button>
+        ))}
       </div>
-      {mode === "strategy" ? (
+      {mode === "archive" ? <ArchivePanel agents={roster} /> : mode === "adhoc" ? (
         roster.length > 0 ? <StrategySession agents={roster} onSpeaking={setStrategyLine} /> : <div className="skeleton" style={{ height: 160 }} />
       ) : (<>
       <section className="section glass">
         {controls}
         {loaded && !tts && <p className="faint" style={{ fontSize: 13 }}>Voices are off: set <span className="mono">ELEVENLABS_API_KEY</span> on the backend to hear the meeting. The transcript is below.</p>}
-        {meeting?.status === "running" && <p className="muted" aria-live="polite"><span className="typing"><span /><span /><span /></span> The pod is debating (started {timeAgo(meeting.started_at)}). A meeting takes 3-7 minutes.</p>}
+        <p className="faint" style={{ fontSize: 13, margin: "8px 0 0" }}>Every day at 4:30pm ET: rundowns (Macro, AI, Internet Platforms, Fintech), trade pitches, debate, and a research memo.</p>
+        {running && <p className="muted" aria-live="polite"><span className="typing"><span /><span /><span /></span> {meeting.progress || "The pod is talking"} (started {timeAgo(meeting.started_at)}; 3-7 minutes){listenLive && tts ? " · listening live" : ""}.</p>}
         {meeting?.status === "failed" && <p className="down">Last meeting failed {timeAgo(meeting.finished_at || meeting.started_at)}: {meeting.error}</p>}
         {(error || playback.error) && <p className="down" role="alert">{error || playback.error}</p>}
       </section>
@@ -226,11 +258,22 @@ export default function Boardroom() {
           </ol>
         </section>
       )}
+      {meeting?.pitches?.length > 0 && (
+        <section className="section glass">
+          <h3>Pitches</h3>
+          <div className="pitch-list">
+            {meeting.pitches.map((p) => (
+              <PitchCard key={p.id} pitch={p.data} analyst={p.analyst} color={byKey[p.analyst_key]?.color} conviction={p.conviction}
+                discussion={p.discussion} owners={owners} />
+            ))}
+          </div>
+        </section>
+      )}
       {roster.length > 0 && <AskThePod agents={roster} />}
       {meeting?.minutes_md && (
         <section className="section glass">
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-            <h3 style={{ margin: 0 }}>Minutes</h3>
+            <h3 style={{ margin: 0 }}>Research memo</h3>
             <AudioPlayer text={meeting.minutes_md} agent="chair" color={CHAIR.color} label="Read aloud" />
           </div>
           <Markdown>{meeting.minutes_md}</Markdown>

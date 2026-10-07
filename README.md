@@ -99,6 +99,26 @@ Or `POST /command {"text": "/ask TTD: ..."}` from any client. Other endpoints: `
 `GET /briefing/{ticker}`, `POST /ask/{ticker}`, `GET /meetings/latest`, `GET /jobs`, `GET /costs`,
 `GET /status`. Interactive docs at `/docs`.
 
+## Research philosophy and conversation modes
+
+Agents are fundamental traders, not sell-side raters: every view is a trade with a narrative (what the business
+earns and trades off, **what the market is missing**, data, catalyst, conviction) and a **trade structure** that
+isolates it (pair / hedge leg to strip out beta, or no trade). This lives in `agents/philosophy.py` and is injected
+into every prompt along with the PM's active **research charter**. Theses carry `market_missing` and `trade_structure`.
+
+1. **Daily Research Town Hall** (4:30pm ET via APScheduler, or `/townhall`, `POST /meeting`): rundowns in order
+   Macro -> AI -> Internet Platforms -> Fintech, ad-hoc pitches (structure, legs, data, catalysts, news links, charts,
+   conviction), discussion, pitcher responses, research memo. Turns are stored as spoken (`meetings.transcript.turns`)
+   so the boardroom plays them live; rows land in `rundowns`, `pitches`, `memos`. `GET /meetings/{id}`.
+2. **Ad-hoc town halls** (boardroom tab, `/strategy`, `/research`, `POST /strategy?mode=`): a *strategy session*
+   ends in a **Research Charter** (`research_charters`, `GET /charter`) that every agent follows until replaced; a
+   *research conversation* takes broad questions, each analyst answers/pitches/reacts, and wraps up with a memo.
+3. **One-on-one office conversations** (the chat in each office, `POST /office/{agent}/message`): general conversation
+   about anything, grounded in the analyst's whole book; transcripts, key insights and trade ideas are stored
+   (`office_conversations`). `GET /archive` lists everything for review afterwards.
+
+Live updates use short polling (2.5-4s) rather than Socket.io: it works on Railway/Vercel with no extra infrastructure.
+
 ## Frontend: Analyst Town (`frontend/`)
 
 React + Vite + react-three-fiber. Laptop (>= 1200px): a 3D town in Central Park (lawns, the Lake and Bow

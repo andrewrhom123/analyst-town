@@ -47,14 +47,15 @@ export default function MeetingPanel({ onClose }) {
     <div className="overlay" role="dialog" aria-modal="true" aria-label="Agent meeting" onClick={onClose}>
       <div className="modal glass" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h2>Town hall meeting</h2>
+          <h2>Daily research town hall</h2>
           <button className="btn icon" onClick={onClose} aria-label="Close">✕</button>
         </div>
         <p className="muted">
-          Agents present their theses, challenge each other, and update their calls. Runs daily at 4:30pm ET (~$1).
+          Rundowns (Macro, AI, Internet Platforms, Fintech), trade pitches, debate, then a research memo. Runs daily at 4:30pm ET (~$1).
+          Listen live in the boardroom.
         </p>
         <button className="btn primary" onClick={start} disabled={starting || meeting?.status === "running"}>
-          {meeting?.status === "running" ? "Meeting in progress…" : starting ? "Starting…" : "Start a meeting now"}
+          {meeting?.status === "running" ? "Town hall in progress…" : starting ? "Starting…" : "Start a town hall now"}
         </button>
         <Link className="btn" to="/boardroom" onClick={onClose} style={{ marginLeft: 8 }}>Enter the boardroom</Link>
         {error && <p className="down" role="alert">{error}</p>}

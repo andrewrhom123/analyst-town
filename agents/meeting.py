@@ -1,14 +1,17 @@
-"""Daily pod meeting: analysts challenge each other and revise their trading theses (light model).
+"""Daily Research Town Hall (4:30 PM ET, or on demand): peer research, not ratings (light model).
 
-Round 1 - Challenges: each analyst reads the pod's current theses and market tape, gives a short
-          market read, challenges 1-3 colleagues' calls, and notes cross-ticker implications for its own names.
-Round 2 - Responses: each analyst answers the challenges aimed at its tickers (accept / partially / reject),
-          revises its theses where warranted, and records generalizable lessons (fed into future prompts).
-Round 3 - Minutes: a chair summarizes debates, changes and the cross-ticker dependency map; each ticker's
-          meeting_notes.md gets its section.
+1. Rundowns  - in order Macro -> AI -> Internet Platforms -> Fintech, each analyst talks ~2 minutes about what
+               it is seeing TODAY: observations, thesis updates, macro shifts hitting its coverage.
+2. Pitches   - an analyst with a new trade idea pitches it with its rundown: narrative, business-model trade-offs,
+               what the market is missing, supporting data, catalysts, news links, charts, conviction, and a
+               structure that isolates the idea (pair / hedge leg to strip out beta).
+3. Discussion - every analyst weighs in on colleagues' pitches and rundowns with its own data: agree, disagree
+               or build. Then each pitcher answers the room and re-states its conviction.
+4. Memo      - the chair writes the research memo (rundowns, pitches and how the debate came out, what the
+               market is missing, action items); each discussed ticker's meeting_notes.md gets its section.
 
-Analysts are called one at a time (never all at once): 2N+1 Sonnet calls for N analysts, about $1 and
-3-7 minutes for the 4-analyst pod.
+Every turn is saved the moment it is spoken (meetings.transcript["turns"]) so the boardroom can play it live;
+rundowns, pitches and the memo also land in their own tables. 2N+1 to 3N+1 Sonnet calls, about $1.
 """
 
 import json
@@ -20,12 +23,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from agents import llm
-from agents.coverage_files import add_meeting_notes, refresh_files
+from agents.coverage_files import add_meeting_notes
+from agents.philosophy import framework_block
 from agents.registry import FOCUS_METRICS, active_contexts, get_context
-from agents.thesis import TradingThesisOut, analyst_lessons, compact_research, current_thesis, latest_research, save_thesis
+from agents.thesis import TradingThesisOut, analyst_lessons, compact_research, current_thesis, latest_research
+from data_sources.cache import get_cached
 from data_sources.price_feed import latest_tick
 from database.db import session_scope
-from database.models import AgentLesson, Meeting
+from database.models import Meeting, Memo, Pitch, Rundown
 from utils import config
 
 logger = logging.getLogger(__name__)
@@ -33,60 +38,89 @@ logger = logging.getLogger(__name__)
 # A meeting runs in the web process; if the server restarts mid-meeting (e.g. a redeploy), its row would stay
 # "running" forever and block new meetings. Anything still running after this long is marked failed.
 STALE_AFTER = timedelta(minutes=20)
-
-# Round 2 for a wide coverage list (Fintech has 8 tickers) plus thinking can outgrow parse_call's 16k default.
-MEETING_MAX_TOKENS = 32000
+MEETING_MAX_TOKENS = 32000  # generous ceiling for rundown + pitch turns (calls stream, so this is safe)
+SPEAKING_ORDER = ["macro", "ai", "internet", "fintech"]  # Macro -> AI -> Internet Platforms -> Fintech
+MACRO_SERIES = ["fed_funds_rate", "treasury_2y", "treasury_10y", "cpi", "unemployment"]
+SPOKEN = "Your words are read aloud to the room: speak naturally in first person, no markdown, no lists."
 
 
 # --- Schemas ----------------------------------------------------------------------------------
 
-class Challenge(BaseModel):
-    ticker: str = Field(description="A colleague's ticker (not one of yours)")
-    challenge: str = Field(description="The specific weakness or blind spot in their current call")
-    evidence: str = Field(description="Data, price action or a cross-ticker read-through that supports the challenge")
-    suggested_change: str
-
-
-class CrossReference(BaseModel):
-    my_ticker: str
-    other_ticker: str
-    implication: str = Field(description="e.g. 'Your Stripe thesis affects my PayPal outlook because ...'")
-
-
-class Contribution(BaseModel):
-    market_read: str = Field(description="2-3 sentences: how you read today's tape for your coverage")
-    challenges: list[Challenge] = Field(description="1-3 challenges to colleagues' calls; quality over quantity")
-    cross_references: list[CrossReference]
-
-
-class ChallengeResponse(BaseModel):
-    ticker: str
-    challenger: str
-    verdict: Literal["accepted", "partially_accepted", "rejected"]
-    response: str
-
-
 class Revision(BaseModel):
+    """A thesis re-statement (used by strategy sessions)."""
     ticker: str
     revised: bool = Field(description="False keeps the current thesis unchanged")
     change_summary: str = Field(description="What changed and why, or why the call stands")
     thesis: TradingThesisOut | None = Field(description="The full revised thesis; null when revised is false (keeps the output short)")
 
 
-class Response(BaseModel):
-    responses: list[ChallengeResponse]
-    revisions: list[Revision] = Field(description="Exactly one per ticker you cover")
-    lessons_learned: list[str] = Field(description="0-3 generalizable lessons worth remembering in future analysis")
+class NewsLink(BaseModel):
+    title: str
+    url: str = Field(description="Exactly as given in your headlines")
+
+
+class CatalystItem(BaseModel):
+    event: str
+    timing: str
+
+
+class PitchOut(BaseModel):
+    title: str = Field(description="One line, e.g. 'Long DASH / short UBER: the market is missing ad take-rate'")
+    long_ticker: str | None = Field(description="The long leg, or null for an outright short")
+    short_ticker: str | None = Field(description="The short / hedge leg, or null for an outright long")
+    structure: Literal["pair", "outright_long", "outright_short", "hedged"]
+    spoken: str = Field(description="The pitch as you say it, 120-200 words: narrative, why now, the edge. " + SPOKEN)
+    business_tradeoffs: str = Field(description="What the business model trades off, and why that matters here")
+    market_missing: str = Field(description="What the market is not seeing, and why it is mispriced now")
+    data_points: list[str] = Field(description="2-5 supporting data points with numbers and sources")
+    catalysts: list[CatalystItem] = Field(description="Near-term events that close the gap")
+    conviction: int = Field(description="1-10: how much real edge we have")
+    news: list[NewsLink] = Field(description="0-3 supporting links chosen from your headlines")
+    chart_tickers: list[str] = Field(description="1-2 tickers whose price chart supports the pitch")
+
+
+class TickerUpdate(BaseModel):
+    ticker: str
+    update: str
+
+
+class RundownOut(BaseModel):
+    spoken: str = Field(description="Your rundown, about two minutes (200-300 words): what you are seeing TODAY across "
+                                    "your coverage, thesis updates, macro shifts. " + SPOKEN)
+    observations: list[str] = Field(description="2-4 key observations, with numbers")
+    thesis_updates: list[TickerUpdate] = Field(description="Names whose view moved today and how (may be empty)")
+    macro_shifts: list[str] = Field(description="Macro shifts affecting your coverage (may be empty)")
+    pitch: PitchOut | None = Field(description="A new trade idea ONLY if you have real edge today; otherwise null")
+
+
+class Comment(BaseModel):
+    topic: str = Field(description="The topic id you are responding to, e.g. 'P1' or 'R-macro'")
+    stance: Literal["agree", "disagree", "build"]
+    spoken: str = Field(description="2-4 sentences bringing your own data. " + SPOKEN)
+    evidence: list[str] = Field(description="The data you are bringing, with numbers")
+
+
+class DiscussionOut(BaseModel):
+    comments: list[Comment] = Field(description="1-3 comments on colleagues' topics, pitches first; quality over quantity")
+
+
+class PitchResponseOut(BaseModel):
+    spoken: str = Field(description="2-4 sentences answering the room: concede good points, defend with data. " + SPOKEN)
+    conviction: int = Field(description="Your conviction after the debate, 1-10")
+    adjustments: str = Field(description="How the trade changes (sizing, hedge, levels), or 'none'")
 
 
 class TickerNote(BaseModel):
     ticker: str
-    notes_md: str = Field(description="Markdown: challenges raised, the response, what changed, open questions")
+    notes_md: str = Field(description="Markdown: what was said about this name, pitches, debate, open questions")
 
 
-class Minutes(BaseModel):
-    summary_md: str = Field(description="Markdown minutes: market tone, key debates and outcomes, thesis changes, "
-                                        "cross-ticker dependency map, action items")
+class TownHallMemo(BaseModel):
+    title: str
+    memo_md: str = Field(description="Markdown research memo for the PM: ## Market tone, ## Rundowns, ## Pitches and "
+                                     "debate (trade, structure, edge, catalysts, where the room came out), ## What the "
+                                     "market is missing, ## Action items")
+    spoken_summary: str = Field(description="3-4 sentences the chair reads aloud to close. " + SPOKEN)
     ticker_notes: list[TickerNote] = Field(description="One per ticker discussed")
 
 
@@ -94,6 +128,10 @@ class Minutes(BaseModel):
 
 def _dump(obj) -> str:
     return json.dumps(obj, indent=1, default=str)
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _board() -> dict:
@@ -115,24 +153,82 @@ def _board() -> dict:
     return board
 
 
-def _analyst_system(name: str, agent_type: str, symbols: list[str], lessons: list[str]) -> str:
-    return f"""You are {name} ({agent_type} analyst) in the research pod's daily meeting. You cover: {", ".join(symbols)}.
-The PM cares about {", ".join(FOCUS_METRICS)} and about actionable position management (entry/exit, risk).
+def speaking_order(board: dict) -> list[str]:
+    """Macro -> AI -> Internet Platforms -> Fintech, then any other desks."""
+    def rank(key: str):
+        if key in SPEAKING_ORDER:
+            return (SPEAKING_ORDER.index(key), key)
+        return (0 if board[key]["agent_type"] == "macro" else len(SPEAKING_ORDER), key)
+    return sorted(board, key=rank)
 
-Meeting norms: be direct and specific; challenge ideas, not people; use numbers and named linkages; concede good points; never invent data you were not given. If nothing in a colleague's call deserves a challenge, don't manufacture one.
+
+def headlines(symbols: list[str], per_ticker: int = 4) -> dict:
+    out = {}
+    for sym in symbols:
+        news = get_cached("news", sym, None) or {}
+        out[sym] = [{k: a.get(k) for k in ("published_at", "title", "url", "source", "sentiment")}
+                    for a in (news.get("articles") or [])[:per_ticker]]
+    return out
+
+
+def macro_indicators() -> dict:
+    out = {}
+    for name in MACRO_SERIES:
+        cached = get_cached("macro", name, None)
+        if cached:
+            out[name] = {"name": cached.get("name"), "unit": cached.get("unit"), "recent": (cached.get("series") or [])[:4]}
+    return out
+
+
+def _desk_view(a: dict) -> dict:
+    """What an analyst brings to the room about its own names (compact)."""
+    view = {}
+    for sym, t in a["tickers"].items():
+        th = t["thesis"] or {}
+        view[sym] = {"name": t["name"], "price": t["price"],
+                     "thesis": {k: th.get(k) for k in ("position", "headline", "conviction_level", "market_missing",
+                                                       "trade_structure", "entry_zone_low", "entry_zone_high",
+                                                       "target_price", "stop_loss", "next_catalysts")} if th else None,
+                     "deep_dive_summary": (t["deep_dive"] or {}).get("executive_summary")}
+    return view
+
+
+def _system(a: dict, lessons: list[str]) -> str:
+    return f"""You are {a['analyst']} ({a['agent_type']} analyst) at the research pod's daily town hall in the boardroom. You cover: {", ".join(a['tickers'])}.
+The PM (Andrew) may be listening; he cares about {", ".join(FOCUS_METRICS)}.
+
+{framework_block()}
+
+Town hall norms: this is peer research, not a hierarchy. Bring data, name linkages, agree or disagree on the merits, concede good points, and hunt for what the market is missing. Debate trades, not ratings. Never invent data you were not given.
 Lessons you have taken from earlier meetings: {_dump(lessons) if lessons else "none yet"}"""
 
 
-def _meeting_context(board: dict) -> str:
-    return f"<pod_board as_of=\"{datetime.now(timezone.utc).isoformat(timespec='minutes')}\">\n{_dump(board)}\n</pod_board>"
+def _turn(meeting_id: int, rnd: str, agent_key: str, speaker: str, text: str, meta: dict | None = None) -> dict:
+    """Append one spoken turn to the live transcript (the boardroom polls and plays these as they land)."""
+    with session_scope() as s:
+        m = s.get(Meeting, meeting_id)
+        transcript = dict(m.transcript or {})
+        turns = list(transcript.get("turns") or [])
+        turn = {"id": len(turns) + 1, "round": rnd, "agent_key": agent_key, "speaker": speaker, "text": text,
+                "meta": meta or {}, "ts": _now().isoformat()}
+        turns.append(turn)
+        transcript["turns"] = turns
+        m.transcript = transcript  # reassign so the JSON change is persisted
+        return turn
 
 
-# --- Rounds -------------------------------------------------------------------------------------
+def _progress(meeting_id: int, text: str | None) -> None:
+    with session_scope() as s:
+        m = s.get(Meeting, meeting_id)
+        m.transcript = {**(m.transcript or {}), "progress": text}
+
+
+# --- Run ------------------------------------------------------------------------------------
 
 def run_meeting(trigger: str = "manual") -> dict:
     llm.require_budget("meeting", config.MEETING_ESTIMATE_USD)
     with session_scope() as s:
-        meeting = Meeting(trigger=trigger)
+        meeting = Meeting(trigger=trigger, mode="daily", transcript={"turns": [], "progress": "Macro is up first"})
         s.add(meeting)
         s.flush()
         meeting_id = meeting.id
@@ -141,87 +237,143 @@ def run_meeting(trigger: str = "manual") -> dict:
     except Exception as exc:
         with session_scope() as s:
             m = s.get(Meeting, meeting_id)
-            m.status, m.error, m.finished_at = "failed", f"{type(exc).__name__}: {exc}", datetime.now(timezone.utc)
+            m.status, m.error, m.finished_at = "failed", f"{type(exc).__name__}: {exc}", _now()
+            m.transcript = {**(m.transcript or {}), "progress": None}
         raise
     return result
 
 
 def _run(meeting_id: int) -> dict:
     board = _board()
-    participants = {k: v for k, v in board.items() if any(t["thesis"] for t in v["tickers"].values())}
-    if len(participants) < 2:
-        raise llm.AnalystError("A meeting needs at least two analysts with a trading thesis")
-    context = _meeting_context(board)
-    transcript = {"contributions": {}, "responses": {}}
+    order = [k for k in speaking_order(board) if board[k]["tickers"]]
+    if len(order) < 2:
+        raise llm.AnalystError("A town hall needs at least two analysts with coverage")
+    rundowns, pitches = [], []  # pitches: {"id": "P1", "db_id", "agent_key", "analyst", "pitch": PitchOut, "comments": []}
 
-    # Round 1: challenges
-    for key, a in participants.items():
-        symbols = list(a["tickers"])
-        contribution, _ = llm.parse_call(
-            "meeting", Contribution, _analyst_system(a["analyst"], a["agent_type"], symbols, analyst_lessons(a["analyst_id"])),
-            [{"role": "user", "content": context + "\n\nRound 1: give your market read, challenge 1-3 colleagues' calls, "
-                                                   "and note cross-ticker implications for your own names."}],
+    # 1-2. Rundowns, with any pitches
+    for key in order:
+        a = board[key]
+        _progress(meeting_id, f"{a['analyst']} is giving the rundown")
+        payload = {"your_names": _desk_view(a), "headlines": headlines(list(a["tickers"])),
+                   "colleagues_so_far": [{"analyst": r["analyst"], "rundown": r["spoken"], "pitch": r.get("pitch_title")} for r in rundowns]}
+        if a["agent_type"] == "macro":
+            payload["macro_indicators"] = macro_indicators()
+        out, _ = llm.parse_call(
+            "meeting", RundownOut, _system(a, analyst_lessons(a["analyst_id"])),
+            [{"role": "user", "content": f"<town_hall as_of=\"{_now().isoformat(timespec='minutes')}\">\n{_dump(payload)}\n</town_hall>\n\n"
+              "Give your rundown. Pitch a new trade only if you have real edge today."}],
             max_tokens=MEETING_MAX_TOKENS,
         )
-        transcript["contributions"][key] = {"analyst": a["analyst"], **contribution.model_dump()}
-
-    # Round 2: responses and revisions
-    for key, a in participants.items():
-        symbols = set(a["tickers"])
-        incoming = [
-            {"from": c["analyst"], **ch} for other, c in transcript["contributions"].items() if other != key
-            for ch in c["challenges"] if ch["ticker"].upper() in symbols
-        ]
-        cross = [
-            {"from": c["analyst"], **x} for other, c in transcript["contributions"].items() if other != key
-            for x in c["cross_references"] if x["other_ticker"].upper() in symbols or x["my_ticker"].upper() in symbols
-        ]
-        reads = {c["analyst"]: c["market_read"] for other, c in transcript["contributions"].items() if other != key}
-        prompt = (context + f"\n\n<colleagues_market_reads>\n{_dump(reads)}\n</colleagues_market_reads>"
-                  f"\n<challenges_to_you>\n{_dump(incoming) or '[]'}\n</challenges_to_you>"
-                  f"\n<cross_references_involving_you>\n{_dump(cross) or '[]'}\n</cross_references_involving_you>"
-                  "\n\nRound 2: respond to each challenge, then give one revision per ticker you cover (revise only "
-                  "where the discussion warrants it; set thesis to null for unchanged calls), and note any "
-                  "generalizable lessons.")
-        response, message = llm.parse_call(
-            "meeting", Response, _analyst_system(a["analyst"], a["agent_type"], sorted(symbols), analyst_lessons(a["analyst_id"])),
-            [{"role": "user", "content": prompt}], max_tokens=MEETING_MAX_TOKENS,
-        )
-        transcript["responses"][key] = {"analyst": a["analyst"], "incoming": incoming, **response.model_dump()}
-        for rev in response.revisions:
-            ctx = get_context(rev.ticker)
-            if ctx and ctx.symbol in symbols and rev.revised and rev.thesis:
-                save_thesis(ctx, rev.thesis, "meeting", f"meeting #{meeting_id}: {rev.change_summary[:200]}", message.model)
+        data = {"observations": out.observations, "thesis_updates": [u.model_dump() for u in out.thesis_updates], "macro_shifts": out.macro_shifts}
         with session_scope() as s:
-            for lesson in response.lessons_learned:
-                s.add(AgentLesson(analyst_id=a["analyst_id"], lesson=lesson, meeting_id=meeting_id))
+            s.add(Rundown(meeting_id=meeting_id, analyst_key=key, analyst_name=a["analyst"], spoken=out.spoken, data=data))
+        _turn(meeting_id, "rundown", key, a["analyst"], out.spoken, data)
+        entry = {"analyst": a["analyst"], "spoken": out.spoken}
+        if out.pitch:
+            p = out.pitch
+            allowed = {h["url"] for hs in payload["headlines"].values() for h in hs if h.get("url")}
+            p.news = [n for n in p.news if n.url in allowed]  # links must come from real headlines
+            pid = f"P{len(pitches) + 1}"
+            with session_scope() as s:
+                row = Pitch(meeting_id=meeting_id, analyst_key=key, analyst_name=a["analyst"], title=p.title,
+                            long_ticker=p.long_ticker, short_ticker=p.short_ticker, structure=p.structure,
+                            conviction=max(1, min(10, p.conviction)), data=p.model_dump(), discussion=[])
+                s.add(row)
+                s.flush()
+                db_id = row.id
+            pitches.append({"id": pid, "db_id": db_id, "agent_key": key, "analyst": a["analyst"], "pitch": p, "comments": []})
+            entry["pitch_title"] = p.title
+            _turn(meeting_id, "pitch", key, a["analyst"], p.spoken, {"pitch_id": pid, "db_id": db_id, **p.model_dump()})
+        rundowns.append({"key": key, **entry})
 
-    # Round 3: minutes
-    minutes, _ = llm.parse_call(
-        "meeting", Minutes,
-        "You chair the research pod's daily meeting and write crisp minutes for the PM: what was debated, who "
-        "changed their mind and why, which cross-ticker dependencies matter, and open action items. Markdown, no filler.",
-        [{"role": "user", "content": f"<transcript>\n{_dump(transcript)}\n</transcript>\n\nWrite the minutes and one note per ticker discussed."}], max_tokens=MEETING_MAX_TOKENS,
+    # 3. Discussion: everyone weighs in on colleagues' pitches and rundowns
+    topics = [{"id": p["id"], "type": "pitch", "by": p["analyst"], "title": p["pitch"].title, "pitch": p["pitch"].model_dump(exclude={"spoken"})}
+              for p in pitches] + [{"id": f"R-{r['key']}", "type": "rundown", "by": r["analyst"], "rundown": r["spoken"]} for r in rundowns]
+    by_id = {p["id"]: p for p in pitches}
+    for key in order:
+        a = board[key]
+        others = [t for t in topics if t["by"] != a["analyst"]]
+        if not others:
+            continue
+        _progress(meeting_id, f"{a['analyst']} is weighing in")
+        out, _ = llm.parse_call(
+            "meeting", DiscussionOut, _system(a, analyst_lessons(a["analyst_id"])),
+            [{"role": "user", "content": f"<your_names>\n{_dump(_desk_view(a))}\n</your_names>\n<topics>\n{_dump(others)}\n</topics>\n\n"
+              "Weigh in on 1-3 of these with your own data, pitches first. Agree, disagree or build; what is the market missing?"}],
+        )
+        valid = {t["id"]: t for t in others}
+        for c in out.comments:
+            topic = valid.get(c.topic.strip())
+            if topic is None:
+                continue
+            meta = {"topic": topic["id"], "topic_title": topic.get("title") or f"{topic['by']}'s rundown",
+                    "stance": c.stance, "evidence": c.evidence}
+            _turn(meeting_id, "discussion", key, a["analyst"], c.spoken, meta)
+            if topic["id"] in by_id:
+                by_id[topic["id"]]["comments"].append({"agent_key": key, "analyst": a["analyst"], "stance": c.stance,
+                                                       "spoken": c.spoken, "evidence": c.evidence})
+
+    # 3b. Pitchers answer the room
+    for p in pitches:
+        if not p["comments"]:
+            continue
+        a = board[p["agent_key"]]
+        _progress(meeting_id, f"{a['analyst']} is answering the room")
+        out, _ = llm.parse_call(
+            "meeting", PitchResponseOut, _system(a, analyst_lessons(a["analyst_id"])),
+            [{"role": "user", "content": f"<your_pitch>\n{_dump(p['pitch'].model_dump())}\n</your_pitch>\n"
+              f"<the_room>\n{_dump(p['comments'])}\n</the_room>\n\nAnswer the room on your pitch."}],
+        )
+        response = {"agent_key": p["agent_key"], "analyst": a["analyst"], "role": "pitcher", "spoken": out.spoken,
+                    "conviction": max(1, min(10, out.conviction)), "adjustments": out.adjustments}
+        with session_scope() as s:
+            row = s.get(Pitch, p["db_id"])
+            row.discussion = [*p["comments"], response]
+            row.conviction = response["conviction"]
+        p["response"] = response
+        _turn(meeting_id, "response", p["agent_key"], a["analyst"], out.spoken,
+              {"pitch_id": p["id"], "conviction": response["conviction"], "adjustments": out.adjustments})
+    for p in pitches:
+        if p["comments"] and "response" not in p:  # no answer recorded; still keep the room's comments
+            with session_scope() as s:
+                s.get(Pitch, p["db_id"]).discussion = p["comments"]
+
+    # 4. Research memo
+    _progress(meeting_id, "The chair is writing the research memo")
+    with session_scope() as s:
+        turns = (s.get(Meeting, meeting_id).transcript or {}).get("turns", [])
+    memo, _ = llm.parse_call(
+        "meeting", TownHallMemo,
+        "You chair the research pod's daily town hall and write the research memo the PM reviews right after. Capture "
+        "each rundown's signal, every pitch (trade, structure, edge, catalysts, conviction before and after) and where the "
+        "debate came out, what the market is missing, and action items. Trades and narrative, never ratings. No filler.\n\n"
+        + framework_block(),
+        [{"role": "user", "content": f"<town_hall_turns>\n{_dump([{k: t[k] for k in ('round', 'speaker', 'text', 'meta')} for t in turns])}\n"
+          "</town_hall_turns>\n\nWrite the research memo and one note per ticker discussed."}],
+        max_tokens=MEETING_MAX_TOKENS,
     )
-    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    for note in minutes.ticker_notes:
+    stamp = _now().strftime("%Y-%m-%d %H:%M UTC")
+    minutes_md = f"# {memo.title}\n\n*Daily research town hall #{meeting_id}, {stamp}*\n\n{memo.memo_md}"
+    for note in memo.ticker_notes:
         ctx = get_context(note.ticker)
         if ctx:
-            add_meeting_notes(ctx.symbol, f"## Meeting #{meeting_id}, {stamp}\n\n{note.notes_md}")
-            refresh_files(ctx.symbol, ["trading_thesis.md"])
+            add_meeting_notes(ctx.symbol, f"## Town hall #{meeting_id}, {stamp}\n\n{note.notes_md}")
+    with session_scope() as s:
+        s.add(Memo(kind="town_hall", meeting_id=meeting_id, title=memo.title, memo_md=minutes_md))
+    _turn(meeting_id, "memo", "chair", "Chair", memo.spoken_summary, {"title": memo.title})
     with session_scope() as s:
         m = s.get(Meeting, meeting_id)
-        m.status, m.finished_at = "done", datetime.now(timezone.utc)
-        m.minutes_md = f"# Pod meeting #{meeting_id}, {stamp}\n\n{minutes.summary_md}"
-        m.transcript = transcript
-    revised = [r["ticker"] for resp in transcript["responses"].values() for r in resp["revisions"] if r["revised"]]
-    return {"meeting_id": meeting_id, "participants": [a["analyst"] for a in participants.values()],
-            "revised_theses": revised, "minutes_md": f"# Pod meeting #{meeting_id}, {stamp}\n\n{minutes.summary_md}"}
+        m.status, m.finished_at, m.minutes_md = "done", _now(), minutes_md
+        m.transcript = {**(m.transcript or {}), "progress": None}
+    return {"meeting_id": meeting_id, "participants": [board[k]["analyst"] for k in order],
+            "pitches": [p["pitch"].title for p in pitches], "revised_theses": [], "minutes_md": minutes_md}
 
+
+# --- Reading --------------------------------------------------------------------------------
 
 def expire_stale_meetings(s) -> None:
     """Mark meetings that have been 'running' longer than STALE_AFTER as failed (their process died)."""
-    now = datetime.now(timezone.utc)
+    now = _now()
     for m in s.scalars(select(Meeting).where(Meeting.status == "running")):
         started = m.started_at if m.started_at.tzinfo else m.started_at.replace(tzinfo=timezone.utc)  # SQLite drops tz
         if now - started > STALE_AFTER:
@@ -237,12 +389,32 @@ def meeting_in_progress() -> bool:
         return s.scalar(select(Meeting.id).where(Meeting.status == "running").limit(1)) is not None
 
 
+def _iso(dt):
+    if dt is None:
+        return None
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).isoformat()
+
+
+def _detail(s, m: Meeting) -> dict:
+    pitches = s.scalars(select(Pitch).where(Pitch.meeting_id == m.id).order_by(Pitch.id)).all()
+    transcript = m.transcript or {}
+    return {"meeting_id": m.id, "mode": m.mode or "daily", "status": m.status, "trigger": m.trigger,
+            "started_at": _iso(m.started_at), "finished_at": _iso(m.finished_at), "minutes_md": m.minutes_md, "error": m.error,
+            "progress": transcript.get("progress"), "turns": transcript.get("turns", []),
+            "pitches": [{"id": p.id, "analyst_key": p.analyst_key, "analyst": p.analyst_name, "title": p.title,
+                         "long_ticker": p.long_ticker, "short_ticker": p.short_ticker, "structure": p.structure,
+                         "conviction": p.conviction, "data": p.data, "discussion": p.discussion} for p in pitches]}
+
+
 def latest_minutes() -> dict | None:
     with session_scope() as s:
         expire_stale_meetings(s)
         s.flush()
         m = s.scalar(select(Meeting).order_by(Meeting.started_at.desc()).limit(1))
-        if m is None:
-            return None
-        return {"meeting_id": m.id, "status": m.status, "trigger": m.trigger, "started_at": m.started_at.isoformat(),
-                "finished_at": m.finished_at.isoformat() if m.finished_at else None, "minutes_md": m.minutes_md, "error": m.error}
+        return _detail(s, m) if m else None
+
+
+def meeting_detail(meeting_id: int) -> dict | None:
+    with session_scope() as s:
+        m = s.get(Meeting, meeting_id)
+        return _detail(s, m) if m else None

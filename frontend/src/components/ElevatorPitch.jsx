@@ -14,12 +14,26 @@ function RangeBar({ low, high, now }) {
   );
 }
 
-/** What the analyst says when you press "Hear the pitch": the call, conviction and the thesis in brief. */
+const STRUCTURE = { outright_long: "Outright long", outright_short: "Outright short", pair: "Pair trade", hedged: "Hedged", no_trade: "No trade" };
+
+/** One line for the trade structure, e.g. "Pair trade: long BLSH / short COIN". */
+function structureLine(b) {
+  const ts = b.trade_structure;
+  if (!ts) return null;
+  const legs = ts.hedge_ticker
+    ? (b.position === "short" ? `short ${b.ticker} / long ${ts.hedge_ticker}` : `long ${b.ticker} / short ${ts.hedge_ticker}`)
+    : null;
+  return `${STRUCTURE[ts.structure] || ts.structure}${legs ? `: ${legs}` : ""}`;
+}
+
+/** What the analyst says when you press "Hear the pitch": the trade, the edge, conviction and the narrative. */
 function spokenPitch(b) {
   if (!b.headline) return "";
   const lv = b.price?.levels || {};
   const parts = [`${b.name || b.ticker}.`, `${b.headline}.`];
-  if (b.signal) parts.push(`My call is ${b.signal}${b.conviction_level ? `, conviction ${b.conviction_level} out of 10` : ""}.`);
+  if (b.market_missing) parts.push(`What the market is missing: ${b.market_missing}`);
+  if (b.trade_structure) parts.push(`How I'd trade it: ${structureLine(b)}. ${b.trade_structure.rationale}`);
+  if (b.conviction_level) parts.push(`Conviction ${b.conviction_level} out of 10.`);
   if (lv.entry_zone_low != null && lv.entry_zone_high != null) parts.push(`Entry zone ${lv.entry_zone_low} to ${lv.entry_zone_high} dollars.`);
   if (lv.target_price != null) parts.push(`Target ${lv.target_price}${lv.stop_loss != null ? `, stop at ${lv.stop_loss}` : ""}.`);
   parts.push(b.thesis || b.executive_summary || "");
@@ -49,6 +63,7 @@ export default function ElevatorPitch({ b, agentId, color }) {
           <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center" }}>
             <div><div className="faint" style={{ fontSize: 12 }}>Conviction</div><ConvictionMeter value={b.conviction_level} /></div>
             {b.position && <span className="chip">position: {b.position}</span>}
+            {b.trade_structure && <span className="chip">{structureLine(b)}</span>}
             {b.risk && <span className="chip">risk: {b.risk.level}, {b.risk.trend}</span>}
             {b.time_horizon && <span className="chip">{b.time_horizon}</span>}
           </div>
@@ -58,6 +73,12 @@ export default function ElevatorPitch({ b, agentId, color }) {
             <div className="stat"><div className="k">Stop</div><div className="v">{fmtPrice(lv.stop_loss)} <span className="faint" style={{ fontSize: 12 }}>{fmtPct(lv.to_stop_pct, 0)}</span></div></div>
           </div>
           <RangeBar low={p.week_52_low} high={p.week_52_high} now={p.price} />
+          {(b.market_missing || b.trade_structure) && (
+            <div className="edge">
+              {b.market_missing && <div><div className="k">What the market is missing</div><p>{b.market_missing}</p></div>}
+              {b.trade_structure && <div><div className="k">Trade structure · {structureLine(b)}</div><p>{b.trade_structure.rationale}</p></div>}
+            </div>
+          )}
         </>
       ) : (
         <p className="muted">The initial deep dive is queued. Research, model and trading thesis appear here once it runs.</p>

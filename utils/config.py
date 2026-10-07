@@ -151,7 +151,7 @@ ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_flash_v2_5")  # fast an
 ELEVENLABS_STT_MODEL = os.getenv("ELEVENLABS_STT_MODEL", "scribe_v2")
 # Characters sent to ElevenLabs per US/Eastern day (cached replays are free and don't count).
 VOICE_DAILY_CHAR_LIMIT = _int("VOICE_DAILY_CHAR_LIMIT", 40000)
-VOICE_MAX_CHARS = _int("VOICE_MAX_CHARS", 1500)  # per request; longer text is cut at a sentence boundary
+VOICE_MAX_CHARS = _int("VOICE_MAX_CHARS", 2400)  # a ~2-minute town hall rundown  # per request; longer text is cut at a sentence boundary
 VOICE_CACHE_DIR = os.getenv("VOICE_CACHE_DIR", str(PROJECT_ROOT / "data_cache" / "voice"))
 
 

@@ -22,14 +22,16 @@ from agents.briefing import HELP, ask, briefing, parse_command
 from agents.dashboard import dashboard
 from alerts.sms import SmsNotConfigured, recent_alerts, send_sms
 from agents.coverage_files import FILENAMES, list_files, price_snapshot, read_file
-from agents.meeting import latest_minutes, meeting_in_progress, run_meeting
+from agents.meeting import latest_minutes, meeting_detail, meeting_in_progress, run_meeting
+from agents.philosophy import active_charter
 from agents.registry import CoverageError, add_analyst, analyst_info, get_context, list_coverage, reassign_ticker, update_ticker
 from agents.thesis import current_thesis, thesis_history
-from agents import strategy, voice
+from agents import office, strategy, voice
 from data_sources.cache import get_cached
 from data_sources.price_feed import chart_series, latest_tick
 from database.db import get_db, init_db
-from database.models import Analyst, CostEntry, FinancialModel, Interaction, Job, Meeting, PriceTick, ResearchOutput, Ticker
+from database.models import (Analyst, CostEntry, FinancialModel, Interaction, Job, Meeting, Memo, OfficeConversation, Pitch,
+                             PriceTick, ResearchCharter, ResearchOutput, Ticker)
 from exports.documents import memo_pdf, model_csv
 from exports.excel_model import build_workbook
 from scheduler.jobs import (
@@ -477,10 +479,12 @@ def _strategy_or_404(session_id: int) -> dict:
 
 
 @app.post("/strategy", status_code=202, dependencies=[Depends(require_key)])
-def post_strategy(background: BackgroundTasks):
-    """Open an all-hands strategy session; the macro strategist opens with market context. Poll GET /strategy/{id}."""
-    session_id = _strategy_call(strategy.start_session)
-    background.add_task(strategy.run_context, session_id)
+def post_strategy(background: BackgroundTasks, mode: str = Query("strategy", pattern="^(strategy|research)$")):
+    """Open an ad-hoc town hall. mode=strategy: macro opens with market context, the memo becomes the research
+    charter. mode=research: broad questions to the whole pod. Poll GET /strategy/{id}."""
+    session_id = _strategy_call(strategy.start_session, mode)
+    if mode == "strategy":
+        background.add_task(strategy.run_context, session_id)
     return strategy.get_session(session_id)
 
 
@@ -528,6 +532,108 @@ def post_strategy_close(session_id: int):
     return strategy.get_session(session_id)
 
 
+@app.get("/meetings/{meeting_id}")
+def get_meeting(meeting_id: int):
+    """One town hall: turns as spoken, pitches with their discussion, the research memo."""
+    m = meeting_detail(meeting_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail="No such meeting")
+    return m
+
+
+# --- One-on-one office conversations ------------------------------------------------------------
+
+class OfficeIn(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+    conversation_id: int | None = None
+    ticker: str | None = Field(None, description="What the PM has up on screen (context, not a constraint)")
+    new_conversation: bool = False
+
+
+@app.post("/office/{agent_id}/message", dependencies=[Depends(require_key)])
+def post_office_message(agent_id: str, body: OfficeIn):
+    """Talk to an analyst in its office about anything; returns the conversation with its reply."""
+    _agent_or_404(agent_id)
+    return _handle(office.say, agent_id, body.text.strip(), body.conversation_id, body.ticker, body.new_conversation)
+
+
+@app.get("/office/{agent_id}/latest")
+def get_office_latest(agent_id: str):
+    _agent_or_404(agent_id)
+    c = office.latest(agent_id)
+    if c is None:
+        raise HTTPException(status_code=404, detail="No conversations yet")
+    return c
+
+
+@app.get("/office/{agent_id}/conversations")
+def get_office_conversations(agent_id: str, limit: int = Query(20, ge=1, le=100)):
+    _agent_or_404(agent_id)
+    return office.history(agent_id, limit)
+
+
+@app.get("/office/conversations/{conversation_id}")
+def get_office_conversation(conversation_id: int):
+    c = office.get(conversation_id)
+    if c is None:
+        raise HTTPException(status_code=404, detail="No such conversation")
+    return c
+
+
+# --- Research archive: memos, pitches, charters, transcripts ------------------------------------
+
+@app.get("/memos")
+def get_memos(kind: str | None = Query(None, pattern="^(town_hall|research|strategy)$"), limit: int = Query(30, ge=1, le=200),
+              db: Session = Depends(get_db)):
+    q = select(Memo).order_by(Memo.created_at.desc()).limit(limit)
+    if kind:
+        q = q.where(Memo.kind == kind)
+    return [{"id": m.id, "kind": m.kind, "title": m.title, "created_at": _iso(m.created_at), "meeting_id": m.meeting_id,
+             "session_id": m.session_id} for m in db.scalars(q)]
+
+
+@app.get("/memos/{memo_id}")
+def get_memo(memo_id: int, db: Session = Depends(get_db)):
+    m = db.get(Memo, memo_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail="No such memo")
+    return {"id": m.id, "kind": m.kind, "title": m.title, "created_at": _iso(m.created_at), "meeting_id": m.meeting_id,
+            "session_id": m.session_id, "memo_md": m.memo_md}
+
+
+@app.get("/pitches")
+def get_pitches(limit: int = Query(30, ge=1, le=200), db: Session = Depends(get_db)):
+    rows = db.scalars(select(Pitch).order_by(Pitch.created_at.desc()).limit(limit))
+    return [{"id": p.id, "analyst": p.analyst_name, "analyst_key": p.analyst_key, "title": p.title, "long_ticker": p.long_ticker,
+             "short_ticker": p.short_ticker, "structure": p.structure, "conviction": p.conviction, "created_at": _iso(p.created_at),
+             "meeting_id": p.meeting_id, "session_id": p.session_id, "data": p.data, "discussion": p.discussion} for p in rows]
+
+
+@app.get("/charter")
+def get_charter():
+    """The research charter currently in force (null if none has been set)."""
+    return active_charter()
+
+
+@app.get("/archive")
+def get_archive(db: Session = Depends(get_db)):
+    """Everything the PM can review after the fact: town halls, ad-hoc sessions, office conversations, memos, charters."""
+    meetings = db.scalars(select(Meeting).order_by(Meeting.started_at.desc()).limit(30)).all()
+    convs = db.scalars(select(OfficeConversation).order_by(OfficeConversation.updated_at.desc()).limit(30)).all()
+    charters = db.scalars(select(ResearchCharter).order_by(ResearchCharter.created_at.desc()).limit(10)).all()
+    return {
+        "town_halls": [{"meeting_id": m.id, "status": m.status, "trigger": m.trigger, "started_at": _iso(m.started_at),
+                        "turns": len((m.transcript or {}).get("turns") or [])} for m in meetings],
+        "sessions": strategy.list_sessions(30),
+        "office_conversations": [{"conversation_id": c.id, "analyst_key": c.analyst_key, "title": c.title,
+                                  "updated_at": _iso(c.updated_at), "turns": len(c.messages or []) // 2,
+                                  "insights": len(c.insights or [])} for c in convs],
+        "memos": get_memos(None, 30, db),
+        "charters": [{"id": c.id, "title": c.title, "active": c.active, "created_at": _iso(c.created_at),
+                      "directives": c.directives} for c in charters],
+    }
+
+
 @app.get("/meetings")
 def get_meetings(limit: int = Query(20, ge=1, le=100), db: Session = Depends(get_db)):
     rows = db.scalars(select(Meeting).order_by(Meeting.started_at.desc()).limit(limit)).all()
@@ -559,6 +665,9 @@ def post_command(body: CommandIn, background: BackgroundTasks, x_api_key: str | 
         return {"command": name, **post_ask(cmd["ticker"], AskIn(question=cmd["question"]))}
     if name == "meeting":
         return {"command": name, **post_meeting(background)}
+    if name in ("strategy", "research"):
+        require_key(x_api_key)
+        return {"command": name, **post_strategy(background, mode=name)}
     if name == "deepdive":
         return {"command": name, **post_deepdive(cmd["ticker"], background)}
     if name == "update":

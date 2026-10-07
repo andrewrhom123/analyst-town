@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from agents import llm
+from agents.philosophy import framework_block
 from agents.registry import FOCUS_METRICS, TickerContext, get_context
 from data_sources.cache import get_cached
 from data_sources.news_fetcher import get_news
@@ -36,12 +37,22 @@ class Dependency(BaseModel):
     impact: str = Field(description="How that name's developments move this thesis")
 
 
+class TradeStructure(BaseModel):
+    structure: Literal["outright_long", "outright_short", "pair", "hedged", "no_trade"] = Field(
+        description="How to express the view; prefer a pair or hedge that strips out beta/sector risk")
+    hedge_ticker: str | None = Field(description="The other leg (short for a long, long for a short), or null for outright/no trade")
+    rationale: str = Field(description="Why this structure isolates the idea, e.g. 'long BLSH / short COIN strips out crypto beta'")
+
+
 class TradingThesisOut(BaseModel):
     position: Literal["long", "short", "flat"]
-    signal: Literal["buy", "add", "hold", "trim", "sell", "short", "cover", "watch"]
-    headline: str = Field(description="One-line call to action, e.g. 'Good entry point at $11-12', 'Risk levels increasing', 'Time to short'")
-    conviction_level: int = Field(description="1-10, strength of evidence")
-    thesis: str = Field(description="1-2 paragraphs: the position, why, and what is priced in")
+    signal: Literal["buy", "add", "hold", "trim", "sell", "short", "cover", "watch"] = Field(
+        description="Position-management action for the PM (not a sell-side rating)")
+    headline: str = Field(description="One-line trade view, e.g. 'Market is missing the take-rate expansion; long vs. COIN', 'Edge gone, step aside'")
+    conviction_level: int = Field(description="1-10, how much real edge we have")
+    thesis: str = Field(description="1-2 paragraphs of narrative: what the business does and earns, the trade-offs, what is priced in")
+    market_missing: str = Field(description="What the market is not seeing (the inefficiency), why it is mispriced now, and the data behind it")
+    trade_structure: TradeStructure
     entry_zone_low: float | None = Field(description="Price where you would initiate/add (long) or short; null for flat with no level")
     entry_zone_high: float | None
     target_price: float | None
@@ -154,8 +165,9 @@ def render_thesis_md(ctx: TickerContext) -> str:
         lines += ["", "_No thesis yet: the initial deep dive is queued._"]
         return "\n".join(lines)
     t = th["thesis"]
+    ts = t.get("trade_structure") or {}
     lines += [
-        f"**Signal:** {t['signal'].upper()} · {t['headline']}",
+        f"**View:** {t['headline']} · action: {t['signal']}",
         f"**Position:** {t['position']} · **Conviction:** {t['conviction_level']}/10 · **Horizon:** {t['time_horizon']}",
         f"**Entry zone:** {_money(t['entry_zone_low'])} - {_money(t['entry_zone_high'])} · "
         f"**Target:** {_money(t['target_price'])}{_vs(t['target_price'], price)} · "
@@ -164,6 +176,9 @@ def render_thesis_md(ctx: TickerContext) -> str:
         f"*Updated {th['created_at'].strftime('%Y-%m-%d %H:%M')} UTC by {th['trigger'].replace('_', ' ')}"
         + (f" ({th['trigger_detail']})" if th["trigger_detail"] else "") + f" at {_money(th['price_at_update'])}*",
         "", "## Thesis", t["thesis"],
+        *(["", "## What the market is missing", t["market_missing"]] if t.get("market_missing") else []),
+        *(["", "## Trade structure", f"**{ts['structure'].replace('_', ' ')}**"
+           + (f" · hedge leg: {ts['hedge_ticker']}" if ts.get("hedge_ticker") else "") + f": {ts['rationale']}"] if ts else []),
         "", "## What changed", t["what_changed"],
         "", "## Risk factors", *[f"- {r}" for r in t["risk_factors"]],
         "", "## Next catalysts", "| Event | Timing | Why it matters |", "|---|---|---|",
@@ -199,7 +214,9 @@ Your analyst focus: {ctx.analyst_focus}
 Ticker focus: {ctx.focus_notes or 'n/a'}
 The PM cares about: {", ".join(FOCUS_METRICS)}.
 
-You are updating the TRADING THESIS between full research deep dives: position, signal, entry/exit levels, risk, catalysts, and cross-ticker dependencies. Think like a PM managing a position, not a report writer.
+You are updating the TRADING THESIS between full research deep dives: the narrative, what the market is missing, the trade structure (pair/hedge), position and action, entry/exit levels, risk, catalysts, and cross-ticker dependencies. Think like a PM managing a position, not a report writer.
+
+{framework_block()}
 
 Rules:
 - Anchor levels to the computed valuation from the last deep dive (DCF, comps, scenario prices) and to recent price action. Levels must be coherent with the position: long -> stop below price, target above; short -> stop above, target below.
