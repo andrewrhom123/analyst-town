@@ -282,6 +282,13 @@ def price_check() -> dict:
             elif enqueue("thesis_update", ctx.symbol, reason, reason.split(":")[0]):
                 triggered.append({"ticker": ctx.symbol, "reason": reason})
         refresh_files(ctx.symbol, ["trading_thesis.md", "latest_events.md", "current_price.json"])
+    # comps peers too, so the relative value board reprices EVs with the market (~1s per quote on the free tier)
+    try:
+        from data_sources.fundamentals import comps_universe
+        peers = sorted(set(comps_universe()) - set(quotes))
+        quotes.update(poll_quotes(peers))
+    except Exception:
+        logger.exception("Peer quotes for relative value failed")
     logger.info("Price check: %d quotes, %d triggers, %d SMS alerts", len(quotes), len(triggered), len(alerts))
     return {"quotes": len(quotes), "triggered": triggered, "alerts": alerts}
 

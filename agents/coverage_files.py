@@ -169,8 +169,22 @@ def _relative_value(outputs: dict, symbol: str) -> list[dict]:
     from agents.registry import comps_basis_overrides
     from data_sources.fundamentals import peer_metrics
 
+    from agents.registry import get_context
+    from data_sources.price_feed import latest_tick
+
     peers = {p["symbol"] for b in (outputs.get("comps") or {}).get("buckets", {}).values() for p in b.get("peers", [])}
-    return relative_value(outputs, symbol, {sym: peer_metrics(sym) for sym in peers}, comps_basis_overrides())
+    cap = dict(outputs.get("capitalization") or {})
+    ctx = get_context(symbol)
+    tick = latest_tick(ctx.price_symbol) if ctx and ctx.price_symbol else None
+    if tick and cap.get("enterprise_value") and cap.get("share_price") and cap.get("diluted_shares_mm"):
+        ev = cap["enterprise_value"] + (tick["price"] - cap["share_price"]) * cap["diluted_shares_mm"]  # $mm
+        rows = {r.get("year"): r for r in outputs.get("rows", [])}
+        cur = rows.get(cap.get("current_year"), {})
+        if ev > 0:
+            cap.update(enterprise_value=ev, priced_at=tick["ts"],
+                       ev_to_revenue_current_year=ev / cur["revenue"] if cur.get("revenue") else None,
+                       ev_to_ebitda_current_year=ev / cur["adj_ebitda"] if (cur.get("adj_ebitda") or 0) > 0 else None)
+    return relative_value({**outputs, "capitalization": cap}, symbol, {sym: peer_metrics(sym) for sym in peers}, comps_basis_overrides())
 
 
 def price_snapshot(ctx: TickerContext) -> dict:

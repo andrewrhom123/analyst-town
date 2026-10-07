@@ -204,6 +204,25 @@ def comps_universe() -> list[str]:
     return list(dict.fromkeys(syms))
 
 
+LIVE_EV_MAX_MOVE = 0.6  # a repriced EV this far from the cached one means mismatched inputs: keep the cached EV
+
+
+def mark_ev_to_market(symbol: str, ev: float | None, overview: dict) -> tuple[float | None, float | None, str | None, bool]:
+    """(ev, price, priced_at, live). Moves the cached EV with the share price since it was cached:
+    EV now = cached EV - cached market cap + latest price x shares (debt and cash stay as last reported)."""
+    from data_sources.price_feed import latest_tick
+
+    tick = latest_tick(symbol)
+    shares, cap = overview.get("shares_outstanding"), overview.get("market_cap")
+    if not (ev and tick and tick.get("price") and shares and cap):
+        return ev, tick.get("price") if tick else None, overview.get("as_of"), False
+    live = ev - cap + tick["price"] * shares
+    if live <= 0 or abs(live / ev - 1) > LIVE_EV_MAX_MOVE:
+        return ev, tick["price"], overview.get("as_of"), False
+    ts = tick["ts"] if ("+" in tick["ts"][10:] or tick["ts"].endswith("Z")) else tick["ts"] + "+00:00"  # SQLite drops tz; ticks are UTC
+    return live, tick["price"], ts, True
+
+
 def peer_metrics(symbol: str) -> dict:
     """Comps row for one name from the caches: LTM multiples (current EV / LTM revenue or EBITDA), LTM revenue and
     EBITDA growth, LTM EBITDA margin. Falls back to the market feed's TTM ratios where there is no US XBRL."""
@@ -212,6 +231,7 @@ def peer_metrics(symbol: str) -> dict:
     ev = o.get("enterprise_value")
     if not ev and (o.get("ev_to_revenue") or 0) > 0 and o.get("revenue_ttm"):
         ev = o["ev_to_revenue"] * o["revenue_ttm"]  # Alpha Vantage gives the ratio, not EV itself
+    ev, price, priced_at, live = mark_ev_to_market(symbol, ev, o)
     usd = bool(l.get("available")) and l.get("currency") == "USD"
     rev = l.get("revenue_ltm") if usd else None
     ebitda = l.get("ebitda_ltm") if usd else None
@@ -238,6 +258,7 @@ def peer_metrics(symbol: str) -> dict:
         "ev_to_revenue": ev_rev,
         "ev_to_ebitda": ev_ebitda,
         "feed_multiples": feed,  # multiples taken from the market feed's TTM ratios, not LTM filings
+        "price": price, "priced_at": priced_at, "ev_live": live,
         "revenue_growth_pct": growth,
         "ebitda_growth_pct": l.get("ebitda_growth_pct"),
         "ebitda_margin_pct": l.get("ebitda_margin_pct"),

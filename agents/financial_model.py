@@ -502,7 +502,8 @@ def _fit_multiple_on_growth(points: list[tuple[float, float]]) -> dict | None:
 
 MULTIPLES = {"ev_to_revenue": "EV/Revenue", "ev_to_ebitda": "EV/EBITDA"}
 PROFITABLE_MARGIN_PCT = 10.0  # auto basis: EV/EBITDA when most of the bucket earns at least this LTM EBITDA margin
-ROW_FIELDS = ("ev_to_revenue", "ev_to_ebitda", "revenue_growth_pct", "ebitda_growth_pct", "ebitda_margin_pct", "feed_multiples", "period")
+ROW_FIELDS = ("ev_to_revenue", "ev_to_ebitda", "revenue_growth_pct", "ebitda_growth_pct", "ebitda_margin_pct", "feed_multiples",
+              "period", "price", "priced_at", "ev_live")
 
 
 def choose_basis(names: list[dict], override: str | None = None) -> tuple[str, str]:

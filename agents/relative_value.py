@@ -55,8 +55,11 @@ def pod_relative_value() -> dict:
         buckets.append({"bucket": bucket, "used_by": sorted(users[bucket]), **scored, "multiple_reason": why,
                         "pair_idea": pair, "priced": len(ranked), "members": len(syms)})
     buckets.sort(key=lambda b: (-(b["pair_idea"]["spread_pct"] if b["pair_idea"] else 0), b["bucket"]))
+    live = [m for m in metrics.values() if m.get("ev_live")]
     return {"buckets": buckets, "rich_cheap_band_pct": 15.0,
-            "note": "Current EV over LTM (last four quarters) revenue or EBITDA from SEC filings, else the market feed's TTM. "
+            "priced_as_of": max((m["priced_at"] for m in live), default=None),
+            "live_names": len(live), "total_names": len(metrics),
+            "note": "EV marked to the latest price (cached EV - cached market cap + price x shares), over LTM (last four quarters) revenue or EBITDA from SEC filings, else the market feed's TTM. "
                     "EBITDA = operating income + D&A + stock comp. Fair multiple = the bucket's multiple regressed on LTM "
                     "revenue growth (needs 3+ names and an upward slope), else the bucket median."}
 

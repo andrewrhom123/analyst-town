@@ -7,6 +7,11 @@ const mult = (v) => (v == null ? "n/m" : `${v.toFixed(1)}x`);
 /** LTM growth / margin: "–" when not meaningful (negative base, no data); clamp huge off-tiny-base growth. */
 const ltm = (v) => (v == null ? "–" : v > 300 ? ">300%" : v < -99 ? "<-99%" : `${v.toFixed(0)}%`);
 const SHORT = { "EV/Revenue": "EV/Rev", "EV/EBITDA": "EV/EBITDA" };
+const timeShort = (iso) => {
+  const d = new Date(iso);
+  const today = new Date().toDateString() === d.toDateString();
+  return d.toLocaleString([], today ? { hour: "numeric", minute: "2-digit" } : { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+};
 
 /**
  * Rich-to-cheap rows for one bucket: a bar per name centred on fair value (left), then the bucket's multiple and
@@ -34,7 +39,8 @@ export function BucketRows({ rows, onTicker, multipleName = "EV/Revenue" }) {
               <b className="rv-mid" />
             </span>
             <span className="rv-num mono">{r.flag ? "basis?" : pct(gap)}</span>
-            <span className="rv-c mono" title={(r.feed_multiples || []).includes(r.multiple_key) ? "From the market feed's TTM ratio (LTM EBITDA/revenue not available from filings)" : r.period || undefined}>
+            <span className="rv-c mono" title={[(r.feed_multiples || []).includes(r.multiple_key) ? "From the market feed's TTM ratio (LTM EBITDA/revenue not available from filings)" : r.period,
+              r.ev_live ? `EV marked to $${r.price} at ${timeShort(r.priced_at)}` : "EV not repriced (no live quote or share count)"].filter(Boolean).join(" · ")}>
               {mult(r.multiple ?? r.ev_to_revenue)}{(r.feed_multiples || []).includes(r.multiple_key) ? "*" : ""}
             </span>
             <span className="rv-c mono">{ltm(r.revenue_growth_pct)}</span>
@@ -56,7 +62,10 @@ export function RelativeValueBoard({ onTicker, limit = 6 }) {
   const [error, setError] = useState(null);
   const [showAll, setShowAll] = useState(false);
   useEffect(() => {
-    api.relativeValue().then(setData).catch((e) => setError(e.message));
+    const load = () => api.relativeValue().then(setData).catch((e) => setError(e.message));
+    load();
+    const id = setInterval(() => document.visibilityState === "visible" && load(), 5 * 60 * 1000);
+    return () => clearInterval(id);
   }, []);
   if (error) return null;
   const buckets = (data?.buckets || []).filter((b) => b.priced >= 2);
@@ -64,7 +73,9 @@ export function RelativeValueBoard({ onTicker, limit = 6 }) {
     <section className="dash-panel glass rv-board" aria-label="Relative value">
       <div className="dash-head">
         <h2>Relative value</h2>
-        <span className="faint">rich ↔ cheap vs peers</span>
+        <span className="faint" title={data ? `${data.live_names} of ${data.total_names} names repriced to the latest quote; the rest use their last cached EV` : undefined}>
+          {data?.priced_as_of ? `priced ${timeShort(data.priced_as_of)} · ${data.live_names}/${data.total_names} live` : "rich ↔ cheap vs peers"}
+        </span>
       </div>
       {!data ? <div className="skeleton" style={{ height: 160 }} /> : buckets.length === 0 ? (
         <p className="faint">Peer multiples fill in as the comps cache warms up.</p>
@@ -89,7 +100,7 @@ export function RelativeValueBoard({ onTicker, limit = 6 }) {
             <button type="button" className="btn small" onClick={() => setShowAll(!showAll)}>{showAll ? "Show fewer" : `All ${buckets.length} buckets`}</button>
           )}
           <p className="faint rv-note">
-            Each bucket uses its industry's multiple (EV/EBITDA or EV/Revenue): current EV over LTM figures from the last four
+            Each bucket uses its industry's multiple (EV/EBITDA or EV/Revenue): EV marked to the latest price (refreshes every 30 min in market hours) over LTM figures from the last four
             quarters of SEC filings (market-feed TTM where unavailable). EBITDA = operating income + D&amp;A + stock comp.
             Fair multiple = the multiple regressed on LTM revenue growth across the bucket; ±15% = in line. "basis?" = not
             comparable (e.g. gross vs net revenue). "–" = not meaningful or no data. * = multiple from the market feed.

@@ -265,7 +265,7 @@ def agent_model(agent_id: str, symbol: str):
     ctx = _ticker_or_404(symbol)
     f = read_file(symbol, "financial_model.json")
     doc = json.loads(f["content"]) if f else {"note": "no model yet"}
-    if doc.get("annual") and "relative_value" not in doc:  # file written before relative value existed
+    if doc.get("annual"):  # recompute so multiples move with today's prices (cache reads only)
         from agents.coverage_files import _relative_value
         from agents.thesis import latest_model_outputs
         outputs = latest_model_outputs(ctx.ticker_id)
