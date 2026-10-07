@@ -22,8 +22,11 @@ export function BucketRows({ rows, onTicker, multipleName = "EV/Revenue" }) {
   return (
     <ol className="rv-rows">
       <li className="rv-colhead" aria-hidden="true">
-        <span /><span /><span className="rv-num">vs fair</span>
-        <span>{SHORT[multipleName] || multipleName}</span><span>Rev gr</span><span>EBITDA gr</span><span>EBITDA mgn</span>
+        <span /><span /><span className="rv-num" title="Premium (+) or discount (-) to the growth-adjusted fair multiple">vs fair</span>
+        <span title={`${multipleName}: EV marked to the latest price over LTM`}>{SHORT[multipleName] || multipleName}</span>
+        <span title="LTM revenue growth (last four quarters vs the four before)">Rev gr</span>
+        <span title="LTM EBITDA growth (last four quarters vs the four before)">EBITDA gr</span>
+        <span title="LTM EBITDA margin (EBITDA / revenue, last four quarters)">EBITDA %</span>
       </li>
       {rows.map((r) => {
         const gap = r.gap_pct;
