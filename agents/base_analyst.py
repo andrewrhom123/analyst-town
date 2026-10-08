@@ -236,6 +236,18 @@ def build_user_prompt(ctx: TickerContext, data: dict, memory: dict, track_record
         sections.append("<your_previous_research>None - this is initial coverage.</your_previous_research>")
     if memory["thesis"]:
         sections.append(f"<your_current_trading_thesis>\n{_dump(memory['thesis'])}\n</your_current_trading_thesis>")
+    model = memory.get("model")
+    if model and model["source"] == "pm_upload":
+        sections.append(
+            f"<current_model source=\"PM's edited version\" date=\"{model['date']}\">\n"
+            "The PM downloaded your model, edited it and uploaded it; this is now the baseline. Start your model inputs "
+            "from these values. Keep every PM assumption unless data that arrived since clearly contradicts it, and list "
+            "each deviation (field, PM value, your value, why) in model_notes.\n"
+            f"PM's note: {model['note'] or 'none'}\nPM's changes vs your previous version: {_dump(model['pm_changes'])}\n"
+            f"{_dump(model['inputs'])}\n</current_model>")
+    elif model:
+        sections.append(f"<your_current_model date=\"{model['date']}\" description=\"your last model inputs; update them with the new data\">\n"
+                        f"{_dump(model['inputs'])}\n</your_current_model>")
     if memory["meeting_notes"]:
         sections.append(f"<recent_meeting_notes>\n{memory['meeting_notes']}\n</recent_meeting_notes>")
     if memory["lessons"]:
@@ -357,7 +369,9 @@ def load_memory(state: AnalystState) -> dict:
         previous = [{**compact_previous(r.research_memo, full=(i == 0)), "date": r.date.date().isoformat()} for i, r in enumerate(rows)]
     thesis = current_thesis(ctx.ticker_id)
     notes = (read_file(ctx.symbol, "meeting_notes.md") or {}).get("content", "")
+    from agents.model_versions import model_for_agent
     return {"memory": {
+        "model": model_for_agent(ctx.ticker_id) if ctx.has_model else None,
         "previous": previous,
         "thesis": thesis["thesis"] if thesis else None,
         "meeting_notes": notes[:6000] if "_No meetings yet._" not in notes else "",

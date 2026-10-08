@@ -112,3 +112,13 @@
 @media (min-width: 1200px) {
   .mobile-office-head { display: none; }
 }
+
+/* Model versions: download / edit / upload round trip */
+.model-versions .mv-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.mv-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.mv-actions .input { flex: 1; min-width: 200px; }
+.mv-result { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: #ecfdf5; border: 1px solid #a7f3d0; font-size: 13.5px; }
+.mv-result .list { margin: 6px 0 0; }
+.mv-table { margin-top: 12px; font-size: 13px; }
+.mv-table tr.latest td { background: #f0fdfa; }
+.mv-table .chip.you { background: #fdf4ff; border-color: #f0abfc; color: var(--magenta-ink); }

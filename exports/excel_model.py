@@ -5,11 +5,16 @@ Model vs. Street, Historical Tracker, Notes.
 
 The P&L, DCF, capitalization and football field are live formulas off blue input cells, so assumptions
 can be changed in Excel. Scenario prices and DCF sensitivity grids are engine outputs (static values).
+
+Round trip: every blue input cell is registered in a hidden "_model_map" sheet (sheet, cell, model-input path,
+kind) together with the model version it was exported from. exports/model_upload.py reads an edited workbook
+back through that map, so the PM can edit blue cells, upload, and the engine recomputes a new model version.
 Legend: blue = input, black = formula, green = link to another tab, yellow fill = key lever.
 """
 
 import io
-from datetime import date
+import json
+from datetime import date, datetime, timezone
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -73,9 +78,18 @@ def _fill_forward(values):
     return out
 
 
+MAP_SHEET = "_model_map"
+
+
 def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, outputs: dict,
-                   track_record: list[dict]) -> bytes:
+                   track_record: list[dict], model_meta: dict | None = None) -> bytes:
     wb = Workbook()
+    inmap: list[tuple] = []  # (sheet, cell, input path, kind) for every blue input cell
+
+    def reg(ws, ref: str, path: str, kind: str = "num") -> None:
+        """kind: num (as is) | pct (cell holds a fraction, input is a percent) | method (1/2) | flag (1/0)."""
+        inmap.append((ws.title, ref, path, kind))
+
     years = inputs["fiscal_years"]
     n = len(years)
     first_e = next(i for i, y in enumerate(years) if y.endswith("E"))
@@ -94,15 +108,16 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
     _set(rb, f"{notes_col}5", "Logic / source", bold=True)
     row = 6
     seg_rev_rows = []
-    for seg in inputs["revenue_segments"]:
+    for si, seg in enumerate(inputs["revenue_segments"]):
         _section(rb, row, f"{seg['name']}  ({seg['driver_logic']})", width=n + 3)
         row += 1
-        for d in seg["drivers"]:
+        for di, d in enumerate(seg["drivers"]):
             _set(rb, f"B{row}", d["name"])
             _set(rb, f"C{row}", d["unit"])
             for i, v in enumerate(d["values"]):
                 if v is not None:
                     _set(rb, f"{col[i]}{row}", v, font=BLUE, fmt='#,##0.00')
+                reg(rb, f"{col[i]}{row}", f"revenue_segments.{si}.drivers.{di}.values.{i}")
             _set(rb, f"{notes_col}{row}", d["logic"], font=NOTE)
             row += 1
         _set(rb, f"B{row}", f"{seg['name']} revenue", bold=True)
@@ -110,6 +125,7 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
         for i, v in enumerate(seg["revenue_mm"]):
             if v is not None:
                 _set(rb, f"{col[i]}{row}", v, font=BLUE, fmt=MM, fill=LEVER_FILL if years[i].endswith("E") else None)
+            reg(rb, f"{col[i]}{row}", f"revenue_segments.{si}.revenue_mm.{i}")
         seg_rev_rows.append(row)
         row += 2
     total_row = row
@@ -125,12 +141,13 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
         _set(rb, f"{c}{row}", h, bold=True)
     row += 1
     sotp_first = row
-    for seg, rev_row in zip(inputs["revenue_segments"], seg_rev_rows):
+    for si, (seg, rev_row) in enumerate(zip(inputs["revenue_segments"], seg_rev_rows)):
         if not seg.get("sotp_ev_to_revenue"):
             continue
         _set(rb, f"B{row}", seg["name"])
         _set(rb, f"C{row}", f"={cur_col}{rev_row}", fmt=MM)
         _set(rb, f"D{row}", seg["sotp_ev_to_revenue"], font=BLUE, fmt=MULT, fill=LEVER_FILL)
+        reg(rb, f"D{row}", f"revenue_segments.{si}.sotp_ev_to_revenue")
         _set(rb, f"E{row}", f"=C{row}*D{row}", fmt=MM)
         _set(rb, f"F{row}", seg["sotp_rationale"], font=NOTE)
         row += 1
@@ -162,8 +179,10 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
     _section(pl, 25, "Model-wide assumptions", width=4)
     _set(pl, f"B{A_TAX}", "Cash tax rate (on positive EBIT)")
     _set(pl, f"C{A_TAX}", inputs["cash_tax_rate_pct"] / 100, font=BLUE, fmt=PCT, fill=LEVER_FILL)
+    reg(pl, f"C{A_TAX}", "cash_tax_rate_pct", "pct")
     _set(pl, f"B{A_NWC}", "Change in NWC, % of change in revenue")
     _set(pl, f"C{A_NWC}", inputs["nwc_pct_of_revenue_change"] / 100, font=BLUE, fmt=PCT, fill=LEVER_FILL)
+    reg(pl, f"C{A_NWC}", "nwc_pct_of_revenue_change", "pct")
 
     pct_inputs = {"gm": "gross_margin_pct", "em": "adj_ebitda_margin_pct", "sbcp": "sbc_pct_of_revenue",
                   "dap": "da_pct_of_revenue", "capexp": "capex_pct_of_revenue"}
@@ -177,6 +196,7 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
         for key, values in ff.items():
             if values[i] is not None:
                 _set(pl, f"{c}{R[key]}", values[i] / 100, font=BLUE, fmt=PCT, fill=LEVER_FILL if is_e else None)
+                reg(pl, f"{c}{R[key]}", f"{pct_inputs[key]}.{i}", "pct")
         _set(pl, f"{c}{R['gp']}", f'=IF({c}{R["gm"]}="","",{c}{R["rev"]}*{c}{R["gm"]})', fmt=MM)
         _set(pl, f"{c}{R['ebitda']}", f'=IF({c}{R["em"]}="","",{c}{R["rev"]}*{c}{R["em"]})', fmt=MM, bold=True)
         _set(pl, f"{c}{R['sbc']}", f'={c}{R["rev"]}*N({c}{R["sbcp"]})', fmt=MM)
@@ -214,9 +234,12 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
         (15, f"EV / Adj. EBITDA ({years[first_e]})",
          f"=IF(N('P&L'!{cur_col}{R['ebitda']})>0,C13/'P&L'!{cur_col}{R['ebitda']},\"NM\")", BLACK, MULT),
     ]
+    cap_paths = {6: "share_price", 7: "diluted_shares_mm", 9: "total_debt_mm", 10: "cash_and_investments_mm", 12: "other_ev_adjustments_mm"}
     for r, label, value, font, fmt in cap_rows:
         _set(sm, f"B{r}", label)
         _set(sm, f"C{r}", value, font=font, fmt=fmt)
+        if r in cap_paths:
+            reg(sm, f"C{r}", f"capitalization.{cap_paths[r]}")
     _set(sm, "E6", cap_in["source_notes"], font=NOTE)
     sm["E6"].alignment = WRAP
 
@@ -243,6 +266,11 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
         if r == 5:
             value = date.fromisoformat(value)
         _set(dc, f"C{r}", value, font=BLUE, fmt=fmt, fill=LEVER_FILL)
+    reg(dc, "C6", "dcf.wacc_pct", "pct")
+    reg(dc, "C7", "dcf.terminal_growth_pct", "pct")
+    reg(dc, "C8", "dcf.exit_multiple_ev_ebitda")
+    reg(dc, "C9", "dcf.terminal_method", "method")
+    reg(dc, "C10", "dcf.sbc_as_cash_cost", "flag")
     _set(dc, "E6", din["rationale"], font=NOTE)
     dc["E6"].alignment = WRAP
 
@@ -307,8 +335,8 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
     # ---------------- Scenarios ----------------
     sc = wb.create_sheet("Scenarios")
     _set(sc, "B2", f"{agent_name}: Scenario analysis", font=TITLE)
-    _set(sc, "B3", "Bull and bear re-run the DCF on their own revenue growth and adj. EBITDA margin paths; base is the "
-                   "segment build. Values are engine outputs (static); re-run the agent to refresh.", font=NOTE)
+    _set(sc, "B3", "Bull and bear re-run the DCF on their own revenue growth and adj. EBITDA margin paths (blue = editable); "
+                   "base is the segment build. Prices are engine outputs: upload your edits to recompute.", font=NOTE)
     e_labels = [years[i] for i in e_years]
     _section(sc, 5, "Scenario inputs and outputs", width=len(e_labels) + 3)
     row = 6
@@ -317,17 +345,22 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
         _set(sc, f"B{row}", s["name"].title(), bold=True)
         _set(sc, f"C{row}", "Probability")
         _set(sc, f"D{row}", s["probability_pct"] / 100, font=BLUE, fmt=PCT, fill=LEVER_FILL)
+        reg(sc, f"D{row}", "scenarios.base_probability_pct" if s["name"] == "base" else f"scenarios.{s['name']}.probability_pct", "pct")
         sc_prob_cells.append(f"D{row}")
         _set(sc, f"E{row}", s["description"], font=NOTE)
         row += 1
         _year_headers(sc, row, 4, e_labels)
         row += 1
-        for label, values, fmt in (("Revenue ($mm)", s["revenue_path"], MM),
-                                   ("Revenue growth %", [_pct(v) for v in s["revenue_growth_pct"]], PCT),
-                                   ("Adj. EBITDA margin %", [_pct(v) for v in s["adj_ebitda_margin_pct"]], PCT)):
+        for label, values, fmt, field in (("Revenue ($mm)", s["revenue_path"], MM, None),
+                                          ("Revenue growth %", [_pct(v) for v in s["revenue_growth_pct"]], PCT, "revenue_growth_pct"),
+                                          ("Adj. EBITDA margin %", [_pct(v) for v in s["adj_ebitda_margin_pct"]], PCT, "adj_ebitda_margin_pct")):
             _set(sc, f"C{row}", label)
+            editable = field is not None and s["name"] in ("bull", "bear")  # base is the segment build itself
             for j, v in enumerate(values):
-                _set(sc, f"{get_column_letter(4 + j)}{row}", v, fmt=fmt)
+                ref = f"{get_column_letter(4 + j)}{row}"
+                _set(sc, ref, v, fmt=fmt, font=BLUE if editable else BLACK, fill=LEVER_FILL if editable else None)
+                if editable:
+                    reg(sc, ref, f"scenarios.{s['name']}.{field}.{j}", "pct")
             row += 1
         for label, value, fmt in (("Enterprise value", s["enterprise_value"], MM), ("Equity value", s["equity_value"], MM),
                                   ("Implied value per share", s["implied_price"], PRICE)):
@@ -504,6 +537,17 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
         row += 1
     nt.column_dimensions["B"].width = 24
     nt.column_dimensions["C"].width = 110
+
+    meta = {"ticker": ticker, "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), **(model_meta or {})}
+    _set(sm, "B4", f"Model version {meta.get('version', '?')} ({meta.get('source_label', 'agent')}). To change it: edit the blue cells "
+                   "(Revenue Build, P&L, Summary capitalization, DCF assumptions, Scenarios), save, and upload in Analyst Town. "
+                   "The engine recomputes everything else and the agents use your version from then on.", font=NOTE)
+    mp = wb.create_sheet(MAP_SHEET)
+    mp["A1"] = json.dumps(meta)
+    mp.append(["sheet", "cell", "path", "kind"])
+    for entry in inmap:
+        mp.append(list(entry))
+    mp.sheet_state = "hidden"
 
     for ws in wb.worksheets:
         ws.sheet_view.showGridLines = False

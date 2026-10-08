@@ -86,6 +86,11 @@ PRICE_MOVE_TRIGGER_PCT = _float("PRICE_MOVE_TRIGGER_PCT", 5.0)  # move since las
 THESIS_COOLDOWN_HOURS = _float("THESIS_COOLDOWN_HOURS", 3.0)  # min gap between triggered updates per ticker
 DEEP_DIVE_MIN_GAP_MINUTES = _int("DEEP_DIVE_MIN_GAP_MINUTES", 60)  # spread deep dives through the day
 MEETING_HOUR = _int("MEETING_HOUR", 16)
+# Autonomous research (queued deep dives, price-triggered thesis updates, the build-out) only spends Claude credits
+# between these hours, US/Eastern (start inclusive, end exclusive). Outside them jobs wait in the queue.
+# Things you start yourself (chat, /deepdive, meetings, sessions) run whenever you ask.
+RESEARCH_HOURS_START = _int("RESEARCH_HOURS_START", 5)
+RESEARCH_HOURS_END = _int("RESEARCH_HOURS_END", 22)
 MEETING_MINUTE = _int("MEETING_MINUTE", 30)
 COVERAGE_DIR = os.getenv("COVERAGE_DIR", str(PROJECT_ROOT / "coverage"))
 # Max characters per SEC filing section sent to Claude (cost control; ~4 chars per token).

@@ -6,6 +6,7 @@ import { EarningsCard, TickerNews, TickerThemes } from "./Dashboard.jsx";
 import DownloadButtons from "./DownloadButtons.jsx";
 import ElevatorPitch, { ThesisDetails } from "./ElevatorPitch.jsx";
 import Markdown from "./Markdown.jsx";
+import ModelVersions from "./ModelVersions.jsx";
 import { ModelRelativeValue } from "./RelativeValue.jsx";
 
 function useLoad(fetcher, deps) {
@@ -28,9 +29,12 @@ function MemoView({ agentId, ticker }) {
 }
 
 function ModelView({ agentId, ticker }) {
-  const { data, error } = useLoad(() => api.model(agentId, ticker), [agentId, ticker]);
-  if (error) return <p className="down">{error.message}</p>;
-  if (!data) return <div className="skeleton" style={{ height: 300 }} />;
+  const [rev, setRev] = useState(0);
+  const { data, error } = useLoad(() => api.model(agentId, ticker), [agentId, ticker, rev]);
+  // the versions panel stays mounted while the model reloads after an upload (keeps the upload result on screen)
+  const versions = <ModelVersions agentId={agentId} ticker={ticker} onUploaded={() => setRev((n) => n + 1)} />;
+  if (error) return <>{versions}<p className="down">{error.message}</p></>;
+  if (!data) return <>{versions}<div className="skeleton" style={{ height: 300 }} /></>;
   if (!data.annual) return <p className="muted">{data.note === "no deep dive yet" ? "No model yet. The deep dive is queued." : `No financial model: ${data.note || "not available"}.`}</p>;
   const rows = data.annual;
   const line = (label, key, fmt) => (
@@ -38,6 +42,7 @@ function ModelView({ agentId, ticker }) {
   );
   return (
     <>
+      {versions}
       {data.summary && (
         <section className="section glass">
           <h3>Summary</h3>

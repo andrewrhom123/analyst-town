@@ -104,6 +104,12 @@ export const api = {
   memo: (id) => request(`/memos/${id}`),
   charter: () => request("/charter"),
   relativeValue: () => request("/relative-value"),
+  modelVersions: (agentId, ticker) => request(`${t(agentId, ticker)}/models`),
+  /** Upload an edited model workbook: returns the new version, the changes read back and the recomputed value. */
+  uploadModel: async (agentId, ticker, file, note) =>
+    (await rawPost(`${t(agentId, ticker)}/model/upload${note ? `?note=${enc(note)}` : ""}`, {
+      body: file, contentType: file.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })).json(),
+  modelDownloadUrl: (ticker, modelId) => `${API_BASE}/coverage/${enc(ticker)}/model.xlsx${modelId ? `?model_id=${modelId}` : ""}`,
   archive: () => request("/archive"),
   strategyLatest: () => request("/strategy/latest"),
   strategySessions: () => request("/strategy?limit=10"),

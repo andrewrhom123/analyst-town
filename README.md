@@ -132,6 +132,19 @@ refreshed daily in the background and cached a week; names without US filings fa
 (multiples marked *). The town page's **Relative value** board (`GET /relative-value`, cache only) shows every bucket
 with the long-cheap / short-rich pair it implies; analysts see the same board in town halls and office conversations.
 
+**Model versions and PM edits.** Every model is a version (agent deep dives and PM uploads). In a ticker's Model tab,
+download the latest workbook, edit any blue input cell (segment revenue and drivers, margins, SBC/D&A/capex, tax,
+capitalization, WACC / terminal value, bull and bear paths and probabilities), and upload it
+(`POST /agents/{agent}/ticker/{symbol}/model/upload`, raw .xlsx). A hidden `_model_map` sheet maps each blue cell to its
+model input, so the edits are read back, validated and recomputed into a new version that becomes the latest: the
+agent's files and chat use it, a thesis update is queued to re-anchor the levels, and the next deep dive starts from
+the PM's assumptions and must justify any change. `GET .../models` lists versions; `/coverage/{symbol}/model.xlsx?model_id=`
+downloads any of them.
+
+**Research hours.** Autonomous research (queued deep dives, price-triggered thesis updates, the build-out) only spends
+between `RESEARCH_HOURS_START` and `RESEARCH_HOURS_END` (default 5am-10pm US/Eastern); outside that window jobs wait in
+the queue. Anything you start yourself runs immediately.
+
 Live updates use short polling (2.5-4s) rather than Socket.io: it works on Railway/Vercel with no extra infrastructure.
 
 ## Frontend: Analyst Town (`frontend/`)

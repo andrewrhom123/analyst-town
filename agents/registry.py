@@ -267,9 +267,16 @@ def list_coverage(include_inactive: bool = False) -> list[dict]:
         return out
 
 
+_basis_cache: dict = {"mtime": None, "value": {}}
+
+
 def comps_basis_overrides() -> dict[str, str]:
-    """Bucket -> multiple ('ev_to_revenue' | 'ev_to_ebitda') from coverage.yaml's comps_basis (industry convention)."""
+    """Bucket -> multiple ('ev_to_revenue' | 'ev_to_ebitda') from coverage.yaml's comps_basis (industry convention).
+    Cached until the file changes."""
     try:
-        return (yaml.safe_load(COVERAGE_FILE.read_text(encoding="utf-8")) or {}).get("comps_basis") or {}
+        mtime = COVERAGE_FILE.stat().st_mtime
+        if _basis_cache["mtime"] != mtime:
+            _basis_cache.update(mtime=mtime, value=(yaml.safe_load(COVERAGE_FILE.read_text(encoding="utf-8")) or {}).get("comps_basis") or {})
+        return _basis_cache["value"]
     except Exception:
         return {}

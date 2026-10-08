@@ -82,6 +82,7 @@ export default function InstructionsTab({ onClose }) {
           <li><b>Pitch / Memo / Model / Chart</b>: switch views for the selected ticker</li>
           <li><b>Chat</b>: talk to the agent</li>
           <li><b>Download</b>: PDF memo, CSV and Excel model, JSON research</li>
+          <li><b>Model versions</b> (Model tab): download the latest model, edit the blue cells in Excel, upload it. Your version becomes the one the agent uses (and re-anchors its levels on); every version stays downloadable.</li>
           <li><b>Price chart</b>: 30-day trend with entry zone, target and stop lines (tap to expand, pinch to zoom)</li>
           <li><b>🗣️</b> (header): start a meeting or read the latest minutes · <b>🔈</b>: office sounds · <b>⚙︎</b>: add your access key</li>
         </ul>

@@ -26,7 +26,7 @@ from agents.meeting import latest_minutes, meeting_detail, meeting_in_progress, 
 from agents.philosophy import active_charter
 from agents.registry import CoverageError, add_analyst, analyst_info, get_context, list_coverage, reassign_ticker, update_ticker
 from agents.thesis import current_thesis, thesis_history
-from agents import office, strategy, voice
+from agents import model_versions, office, strategy, voice
 from data_sources.cache import get_cached
 from data_sources.price_feed import chart_series, latest_tick
 from database.db import get_db, init_db
@@ -169,6 +169,8 @@ def status(db: Session = Depends(get_db)):
         "database": "sqlite" if config.DATABASE_URL.startswith("sqlite") else "postgresql",
         "missing_config": config.missing_keys(),
         "voice": config.voice_status(),
+        "research_hours": {"start": config.RESEARCH_HOURS_START, "end": config.RESEARCH_HOURS_END, "timezone": "America/New_York",
+                           "open": __import__("scheduler.jobs", fromlist=["in_research_hours"]).in_research_hours()},
         "sms_alerts": {"enabled": config.SMS_ALERTS_ENABLED, "configured": config.sms_configured(), "threshold_pct": config.ALERT_MOVE_PCT},
         "models": {"deep_dive": config.DEEP_MODEL, "light": config.LIGHT_MODEL},
         "budget": {**(budget := llm.budget_status()), "buildout": {
@@ -324,7 +326,7 @@ def agent_download(agent_id: str, symbol: str, kind: str, db: Session = Depends(
         return Response(memo_pdf(memo, f"{ctx.symbol} research memo"), media_type="application/pdf",
                         headers={"Content-Disposition": f'attachment; filename="{ctx.symbol}_memo_{stamp}.pdf"'})
     if kind == "model.xlsx":
-        return get_model_xlsx(ctx.symbol, db)
+        return get_model_xlsx(ctx.symbol, db, model_id=None)
     if kind == "model.csv":
         fm = db.scalar(select(FinancialModel).where(FinancialModel.ticker_id == ctx.ticker_id).order_by(FinancialModel.date.desc()).limit(1))
         if fm is None:
@@ -826,18 +828,45 @@ def get_research(symbol: str, history: int = Query(10, ge=0, le=100), db: Sessio
 
 
 @app.get("/coverage/{symbol}/model.xlsx")
-def get_model_xlsx(symbol: str, db: Session = Depends(get_db)):
+def get_model_xlsx(symbol: str, db: Session = Depends(get_db), model_id: int | None = Query(None, description="A specific version; default latest")):
     ctx = _ticker_or_404(symbol)
-    fm = db.scalar(select(FinancialModel).where(FinancialModel.ticker_id == ctx.ticker_id).order_by(FinancialModel.date.desc()).limit(1))
+    if model_id:
+        fm = db.get(FinancialModel, model_id)
+        if fm is None or fm.ticker_id != ctx.ticker_id:
+            raise HTTPException(status_code=404, detail="No such model version")
+    else:
+        fm = db.scalar(select(FinancialModel).where(FinancialModel.ticker_id == ctx.ticker_id).order_by(FinancialModel.date.desc(), FinancialModel.id.desc()).limit(1))
     if fm is None or not (fm.assumptions or {}).get("inputs"):
         raise HTTPException(status_code=404, detail=f"No financial model yet for {ctx.symbol}")
     research = db.get(ResearchOutput, fm.research_id) if fm.research_id else None
     record = {**(research.research_memo if research else {}), "date": fm.date.date().isoformat()}
     sec = get_cached("sec", (ctx.sec_ticker or ctx.symbol).upper(), None)
+    meta = model_versions.version_meta(ctx.symbol, fm.id)
     content = build_workbook(ctx.analyst_name, ctx.symbol, record, fm.assumptions["inputs"], fm.assumptions["outputs"],
-                             build_track_record(ctx.ticker_id, sec))
+                             build_track_record(ctx.ticker_id, sec), model_meta=meta)
     return Response(content=content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    headers={"Content-Disposition": f'attachment; filename="{ctx.symbol}_model_{fm.date.date().isoformat()}.xlsx"'})
+                    headers={"Content-Disposition": f'attachment; filename="{ctx.symbol}_model_v{meta["version"]}_{fm.date.date().isoformat()}.xlsx"'})
+
+
+@app.get("/agents/{agent_id}/ticker/{symbol}/models")
+def agent_model_versions(agent_id: str, symbol: str):
+    """Model versions, newest first: agent deep dives and the PM's uploaded edits."""
+    _agent_or_404(agent_id)
+    ctx = _ticker_or_404(symbol)
+    return model_versions.list_versions(ctx.symbol)
+
+
+@app.post("/agents/{agent_id}/ticker/{symbol}/model/upload", dependencies=[Depends(require_key)])
+async def agent_model_upload(agent_id: str, symbol: str, request: Request, note: str | None = Query(None, max_length=1000)):
+    """Upload an edited model workbook (raw .xlsx body). Blue input cells are read back, validated and recomputed
+    into a new version the agents use from then on; a thesis update is queued to re-anchor the trading levels."""
+    _agent_or_404(agent_id)
+    ctx = _ticker_or_404(symbol)
+    data = await request.body()
+    try:
+        return model_versions.apply_upload(ctx.symbol, data, note)
+    except model_versions.ModelUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/coverage/{symbol}/thesis/history")

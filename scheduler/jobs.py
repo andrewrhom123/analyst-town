@@ -201,7 +201,7 @@ def run_job(job_id: int, pool: str | None = None) -> dict:
 def _buildout_worker(analyst_id: int) -> None:
     """Work through one agent's initial deep dives on the build-out pool until done or the pool runs dry."""
     try:
-        while (job := _next_buildout_job(analyst_id)) is not None:
+        while in_research_hours() and (job := _next_buildout_job(analyst_id)) is not None:
             ok, why = _reserve(job.id, BUILDOUT, "deep_dive", config.DEEP_DIVE_ESTIMATE_USD)
             if not ok:
                 logger.info("Build-out pool closed (%s); remaining initial jobs go to the daily lane", why)
@@ -224,9 +224,18 @@ def _daily_worker(job_id: int) -> None:
         _daily_busy.clear()
 
 
+def in_research_hours(now: datetime | None = None) -> bool:
+    """Whether autonomous research may spend now (RESEARCH_HOURS_START-RESEARCH_HOURS_END, US/Eastern)."""
+    hour = (now or datetime.now(EASTERN)).astimezone(EASTERN).hour
+    return config.RESEARCH_HOURS_START <= hour < config.RESEARCH_HOURS_END
+
+
 def process_queue() -> dict:
     """Non-blocking tick: start a build-out worker for every agent with initial deep dives (all agents in
-    parallel while the pool lasts) and, if the daily lane is idle, start its next job."""
+    parallel while the pool lasts) and, if the daily lane is idle, start its next job. Outside research
+    hours nothing starts; queued jobs wait for the morning."""
+    if not in_research_hours():
+        return {"paused": f"outside research hours ({config.RESEARCH_HOURS_START}:00-{config.RESEARCH_HOURS_END}:00 ET)"}
     started = []
     is_open = buildout_open()
     if is_open:

@@ -227,6 +227,20 @@ Rules:
 - First person, plain sentences, numbers over adjectives."""
 
 
+def _model_view(ticker_id: int) -> dict | None:
+    """Latest model valuation (the PM's edited version when there is one): anchor the levels on it."""
+    with session_scope() as s:
+        fm = s.scalar(select(FinancialModel).where(FinancialModel.ticker_id == ticker_id).order_by(FinancialModel.date.desc()).limit(1))
+        if fm is None:
+            return None
+        a = fm.assumptions or {}
+        o = a.get("outputs") or {}
+        return {"source": "PM's edited model" if a.get("source") == "pm_upload" else "your model",
+                "pm_note": a.get("note"), "pm_changes": [{k: c[k] for k in ("label", "old", "new")} for c in a.get("changes") or []],
+                "football_field": [{k: m.get(k) for k in ("method", "implied_price", "upside_pct")} for m in o.get("football_field", [])],
+                "probability_weighted_price": o.get("probability_weighted_price")}
+
+
 def build_update_prompt(ctx: TickerContext, trigger: str, detail: str) -> str:
     th = current_thesis(ctx.ticker_id)
     news = get_cached("news", ctx.symbol, None) or {}
@@ -242,6 +256,7 @@ def build_update_prompt(ctx: TickerContext, trigger: str, detail: str) -> str:
         "current_thesis": th["thesis"] if th else None,
         "current_thesis_set_at": {"time": th["created_at"].isoformat(), "price": th["price_at_update"], "trigger": th["trigger"]} if th else None,
         "last_deep_dive": compact_research(latest_research(ctx.ticker_id)),
+        "current_model_valuation": _model_view(ctx.ticker_id),
         "news_headlines": [{k: a.get(k) for k in ("published_at", "title", "source", "sentiment")} for a in news.get("articles", [])],
         "pod_snapshot": pod_snapshot(exclude_ticker_id=ctx.ticker_id),
         "your_lessons_from_meetings": analyst_lessons(ctx.analyst_id),
