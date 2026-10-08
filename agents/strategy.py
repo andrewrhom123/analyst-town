@@ -422,7 +422,8 @@ def run_finalize(session_id: int) -> None:
             "strategy", StrategyMemo,
             "You chair the research pod's strategy session and write the Research Charter every analyst will sign and "
             "apply to all future research. Capture the PM's strategy faithfully as concrete research directives, plus "
-            "the market context, what each desk will do, guardrails, and any dissent that remains. Crisp, no filler.",
+            "the market context, what each desk will do, guardrails, and any dissent that remains. Crisp, no filler.\n\n"
+            + framework_block(),
             [{"role": "user", "content": f"<market_context>\n{_dump(session['market_context'])}\n</market_context>\n"
               f"<session>\n{_dump(transcript)}\n</session>\n\nWrite the strategy memo."}],
         )

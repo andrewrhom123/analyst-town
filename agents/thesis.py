@@ -115,7 +115,7 @@ def pod_snapshot(exclude_ticker_id: int | None = None) -> list[dict]:
             if t.id == exclude_ticker_id:
                 continue
             th = s.scalar(select(TradingThesis).where(TradingThesis.ticker_id == t.id).order_by(TradingThesis.created_at.desc()).limit(1))
-            out.append({"ticker": t.symbol, "analyst": t.analyst.name,
+            out.append({"ticker": t.symbol, "company": t.name, "analyst": t.analyst.name,
                         "signal": th.thesis.get("signal") if th else None,
                         "position": th.thesis.get("position") if th else None,
                         "conviction": th.thesis.get("conviction_level") if th else None,
@@ -155,7 +155,7 @@ def render_thesis_md(ctx: TickerContext) -> str:
     th = current_thesis(ctx.ticker_id)
     tick = latest_tick(ctx.price_symbol) if ctx.price_symbol else None
     price = tick["price"] if tick else (th["price_at_update"] if th else None)
-    lines = [f"# {ctx.symbol}: trading thesis", f"*{ctx.name} · covered by {ctx.analyst_name}*", ""]
+    lines = [f"# {ctx.name} ({ctx.symbol}): trading thesis", f"*Covered by {ctx.analyst_name}*", ""]
     if tick:
         chg = f"{tick['change_pct']:+.2f}% today" if tick["change_pct"] is not None else ""
         lines.append(f"**Price:** {_money(tick['price'])} {chg} · as of {tick['ts'][:16].replace('T', ' ')} UTC")

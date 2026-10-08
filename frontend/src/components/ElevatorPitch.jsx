@@ -32,7 +32,8 @@ function spokenPitch(b) {
   const lv = b.price?.levels || {};
   const parts = [`${b.name || b.ticker}.`, `${b.headline}.`];
   if (b.market_missing) parts.push(`What the market is missing: ${b.market_missing}`);
-  if (b.trade_structure) parts.push(`How I'd trade it: ${structureLine(b)}. ${b.trade_structure.rationale}`);
+  // spoken: no tickers, just the structure and the analyst's rationale (written with company names)
+  if (b.trade_structure) parts.push(`How I'd trade it: ${(STRUCTURE[b.trade_structure.structure] || "").toLowerCase()}. ${b.trade_structure.rationale}`);
   if (b.conviction_level) parts.push(`Conviction ${b.conviction_level} out of 10.`);
   if (lv.entry_zone_low != null && lv.entry_zone_high != null) parts.push(`Entry zone ${lv.entry_zone_low} to ${lv.entry_zone_high} dollars.`);
   if (lv.target_price != null) parts.push(`Target ${lv.target_price}${lv.stop_loss != null ? `, stop at ${lv.stop_loss}` : ""}.`);

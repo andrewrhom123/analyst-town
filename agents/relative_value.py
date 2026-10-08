@@ -11,6 +11,7 @@ models add the forward, model-based view and private-market marks.
 from agents.financial_model import choose_basis, score_bucket
 from agents.registry import active_contexts, comps_basis_overrides
 from agents.thesis import current_thesis
+from agents.philosophy import short_name
 from data_sources.fundamentals import peer_metrics
 
 
@@ -37,7 +38,7 @@ def pod_relative_value() -> dict:
             if ctx:
                 th = current_thesis(ctx.ticker_id)
                 t = th["thesis"] if th else {}
-                n.update(covered=True, analyst=ctx.analyst_name, analyst_key=ctx.analyst_key, position=t.get("position"))
+                n.update(covered=True, name=ctx.name, analyst=ctx.analyst_name, analyst_key=ctx.analyst_key, position=t.get("position"))
             else:
                 n.update(covered=False)
             names.append(n)
@@ -73,7 +74,7 @@ def desk_relative_value(symbols: list[str]) -> list[dict]:
         if not mine & set(b["used_by"]):
             continue
         out.append({"bucket": b["bucket"], "multiple": b["multiple_name"], "why": b["multiple_reason"], "pair_idea": b["pair_idea"],
-                    "rich_to_cheap": [{"symbol": r["symbol"], "multiple": r1(r["multiple"]), "ltm_revenue_growth_pct": r1(r["revenue_growth_pct"]),
+                    "rich_to_cheap": [{"symbol": r["symbol"], "company": short_name(r.get("name")) or r["symbol"], "multiple": r1(r["multiple"]), "ltm_revenue_growth_pct": r1(r["revenue_growth_pct"]),
                                        "ltm_ebitda_growth_pct": r1(r["ebitda_growth_pct"]), "ltm_ebitda_margin_pct": r1(r["ebitda_margin_pct"]),
                                        "vs_fair_pct": round(r["gap_pct"]) if r["gap_pct"] is not None else None,
                                        "verdict": r["verdict"], "covered": r["covered"]} for r in b["rows"] if r["verdict"]]})

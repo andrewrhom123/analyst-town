@@ -86,7 +86,7 @@ def render_company_memo(ctx: TickerContext) -> str:
 
 
 def render_latest_events(ctx: TickerContext) -> str:
-    lines = [f"# {ctx.symbol}: latest events", f"*Refreshed {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC*", ""]
+    lines = [f"# {ctx.name} ({ctx.symbol}): latest events", f"*Refreshed {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC*", ""]
     if ctx.price_symbol:
         tick = latest_tick(ctx.price_symbol)
         lines.append("## Price action")
@@ -256,7 +256,7 @@ def ensure_files(symbol: str) -> None:
         return
     refresh_files(symbol)
     if read_file(symbol, "meeting_notes.md") is None:
-        write_file(ctx, "meeting_notes.md", f"# {ctx.symbol}: meeting notes\n\n_No meetings yet._\n")
+        write_file(ctx, "meeting_notes.md", f"# {ctx.name} ({ctx.symbol}): meeting notes\n\n_No meetings yet._\n")
 
 
 def add_meeting_notes(symbol: str, section_md: str) -> None:
@@ -265,8 +265,8 @@ def add_meeting_notes(symbol: str, section_md: str) -> None:
     if ctx is None:
         return
     existing = (read_file(symbol, "meeting_notes.md") or {}).get("content", "")
-    header = f"# {ctx.symbol}: meeting notes"
-    body = existing.split("\n", 1)[1] if existing.startswith(header) else ""
+    header = f"# {ctx.name} ({ctx.symbol}): meeting notes"
+    body = existing.split("\n", 1)[1] if existing.startswith("# ") and "\n" in existing else ""  # any title, incl. older ticker-only ones
     previous = [b.strip() for b in body.split(MEETING_SEPARATOR) if b.strip() and "_No meetings yet._" not in b]
     sections = [section_md.strip()] + previous[: MAX_MEETINGS_IN_NOTES - 1]
     write_file(ctx, "meeting_notes.md", header + "\n\n" + MEETING_SEPARATOR.join(sections) + "\n")
