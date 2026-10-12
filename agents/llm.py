@@ -87,20 +87,37 @@ def price_usage(model: str, usage) -> float:
 # Initial-coverage deep dives are paid from a separate one-time pool (BUILDOUT_BUDGET_USD) instead of
 # the daily budget. Their cost rows are tagged "buildout_<kind>" and left out of spent_today().
 BUILDOUT_PREFIX = "buildout_"
-_buildout_tickers: set[str] = set()
+# Separate one-off runs (e.g. the quarterly model rebuild) are tagged "separate_<kind>": outside the daily budget
+# and outside the build-out pool, each capped by its own run.
+SEPARATE_PREFIX = "separate_"
+_scoped_tickers: dict[str, str] = {}  # ticker -> cost-tag prefix while inside a scope
 _buildout_lock = threading.Lock()
 
 
 @contextmanager
-def buildout_scope(ticker: str):
-    """Charge Claude calls for this ticker to the build-out pool while inside the block."""
+def _cost_scope(ticker: str, prefix: str):
     with _buildout_lock:
-        _buildout_tickers.add(ticker)
+        _scoped_tickers[ticker] = prefix
     try:
         yield
     finally:
         with _buildout_lock:
-            _buildout_tickers.discard(ticker)
+            _scoped_tickers.pop(ticker, None)
+
+
+def buildout_scope(ticker: str):
+    """Charge Claude calls for this ticker to the build-out pool while inside the block."""
+    return _cost_scope(ticker, BUILDOUT_PREFIX)
+
+
+def separate_scope(ticker: str):
+    """Tag Claude calls for this ticker as a separate run (not counted in the daily budget) while inside the block."""
+    return _cost_scope(ticker, SEPARATE_PREFIX)
+
+
+def in_separate_scope(ticker: str) -> bool:
+    with _buildout_lock:
+        return _scoped_tickers.get(ticker) == SEPARATE_PREFIX
 
 
 def buildout_spent() -> float:
@@ -113,8 +130,7 @@ def record_cost(kind: str, message, ticker: str | None = None) -> float:
     usage = message.usage
     usd = price_usage(message.model, usage)
     with _buildout_lock:
-        if ticker in _buildout_tickers:
-            kind = BUILDOUT_PREFIX + kind
+        kind = _scoped_tickers.get(ticker, "") + kind
     with session_scope() as s:
         s.add(CostEntry(
             kind=kind, ticker=ticker, model=message.model,
@@ -134,7 +150,8 @@ def _day_start_utc() -> datetime:
 def spent_today() -> float:
     with session_scope() as s:
         return float(s.scalar(select(func.coalesce(func.sum(CostEntry.usd), 0.0))
-                              .where(CostEntry.ts >= _day_start_utc(), CostEntry.kind.not_like(f"{BUILDOUT_PREFIX}%"))))
+                              .where(CostEntry.ts >= _day_start_utc(), CostEntry.kind.not_like(f"{BUILDOUT_PREFIX}%"),
+                                     CostEntry.kind.not_like(f"{SEPARATE_PREFIX}%"))))
 
 
 def spend_breakdown_today() -> dict:

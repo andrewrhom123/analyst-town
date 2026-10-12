@@ -915,6 +915,26 @@ def post_bootstrap(body: BootstrapIn, background: BackgroundTasks):
     return {"status": "started", "budget_usd": body.budget_usd, "poll": "/jobs?status=running", "costs": "/costs"}
 
 
+class QuarterlyRebuildIn(BaseModel):
+    analyst: str = Field("internet", description="Analyst key; must have model_frequency: quarterly in coverage.yaml")
+    max_usd_per_ticker: float = Field(1.0, gt=0.2, le=2.0, description="Hard cost cap per ticker")
+    tickers: list[str] | None = Field(None, description="Only these tickers (default: all of the analyst's public names)")
+
+
+@app.post("/admin/quarterly-rebuild", status_code=202, dependencies=[Depends(require_key)])
+def post_quarterly_rebuild(body: QuarterlyRebuildIn, background: BackgroundTasks):
+    """Separate model-only run: rebuild the analyst's models by quarter (not counted in the daily budget)."""
+    from agents.quarterly_rebuild import quarterly_tickers, run as run_rebuild
+
+    symbols = [t.upper() for t in body.tickers] if body.tickers else quarterly_tickers(body.analyst)
+    if not symbols:
+        raise HTTPException(status_code=400, detail=f"No public tickers with a quarterly model for analyst '{body.analyst}'")
+    background.add_task(run_rebuild, body.analyst, body.max_usd_per_ticker, symbols)
+    return {"status": "started", "tickers": symbols, "max_usd_per_ticker": body.max_usd_per_ticker,
+            "max_total_usd": round(body.max_usd_per_ticker * len(symbols), 2),
+            "progress": "GET /costs (separate_quarterly_model) and GET /agents/{analyst}/ticker/{ticker}/models"}
+
+
 class TestSmsIn(BaseModel):
     message: str | None = Field(default=None, max_length=480)
 

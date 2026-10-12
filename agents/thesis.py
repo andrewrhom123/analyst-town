@@ -271,7 +271,8 @@ def update_thesis(symbol: str, trigger: str, detail: str) -> dict:
     ctx = get_context(symbol)
     if ctx is None:
         raise llm.AnalystError(f"Unknown ticker {symbol}")
-    llm.require_budget("thesis_update", config.THESIS_UPDATE_ESTIMATE_USD)
+    if not llm.in_separate_scope(ctx.symbol):  # separate runs carry their own cap
+        llm.require_budget("thesis_update", config.THESIS_UPDATE_ESTIMATE_USD)
     try:  # refresh headlines if stale (NewsAPI, cached a day)
         get_news(ctx.symbol, ctx.news_query, ctx.news_keywords)
     except Exception:
