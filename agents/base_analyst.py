@@ -30,7 +30,8 @@ from sqlalchemy import select
 
 from agents import llm
 from agents.coverage_files import read_file, refresh_files
-from agents.financial_model import ModelInputError, ModelInputs, compute_model, describe_for_claude
+from agents.financial_model import (ModelInputError, ModelInputs, QuarterlyModelInputs, compute_model, compute_quarterly_model,
+                                    describe_for_claude)
 from agents.llm import AnalystError
 from agents.philosophy import framework_block
 from agents.registry import FOCUS_METRICS, TickerContext, get_context
@@ -38,7 +39,7 @@ from agents.research_format import ResearchWriteup, build_research_record
 from agents.thesis import analyst_lessons, current_thesis, pod_snapshot, save_thesis
 from data_sources.market_data import get_macro_data, get_market_data, get_peer_multiples
 from data_sources.news_fetcher import get_news
-from data_sources.sec_fetcher import get_sec_data
+from data_sources.sec_fetcher import DEFAULT_QUARTERS, QUARTERLY_MODEL_QUARTERS, get_sec_data
 from database.db import session_scope
 from database.models import FinancialModel, ResearchOutput, Ticker
 from utils import config
@@ -97,6 +98,16 @@ MODEL_TOOL_DEF = _tool(
     "If it returns an error, fix the inputs and call it again.",
     ModelInputs,
 )
+# Same tool name, quarterly schema: for analysts with model_frequency: quarterly. The engine sums the quarters into years.
+QUARTERLY_MODEL_TOOL_DEF = _tool(
+    MODEL_TOOL,
+    "Submit the quarterly financial model inputs (segment revenue build and margins for every quarter, capitalization, "
+    "DCF assumptions, annual bull/bear scenarios, primary comps bucket, next-print estimate). The engine validates them, "
+    "sums the quarters into calendar years and returns the computed quarterly and annual P&L, DCF, comps, "
+    "sum-of-the-parts, scenario prices and the research-JSON financial_model summary. If it returns an error, fix the "
+    "inputs and call it again.",
+    QuarterlyModelInputs,
+)
 RESEARCH_TOOL_DEF = _tool(
     RESEARCH_TOOL,
     "Submit the finished research: executive summary, long-form memo sections, company background, key risks, "
@@ -125,6 +136,13 @@ MODEL_GUIDE = """Financial model conventions (match the PM's BLSH / PUBM workboo
 - Value it BOTH ways, on BOTH lenses: intrinsic (DCF) and relative (comps), in public markets and private markets. In private_market give the funding rounds / secondaries of private peers and precedent acquisitions or take-privates (cite the headline or filing; label anything else 'general knowledge, unverified') and the EV/revenue a private or strategic buyer would pay. The engine adds a private-market row to the football field.
 - The engine ranks every name in each comps bucket rich-to-cheap on EV/revenue vs a growth-adjusted fair multiple (regressed across the bucket). This is central to how the PM invests: say who is over- vs under-priced against whom, and whether the subject is the cheap or rich leg of a pair.
 - Next print: estimate the next reported quarter against company guidance and explain the gap."""
+
+QUARTERLY_MODEL_GUIDE = """Quarterly build (this analyst models by quarter; it replaces the calendar-year column rule above):
+- Columns are calendar quarters covering whole years: every quarter of the 2 most recent full actual years, then through Q4 of the 4th forecast year (e.g. 2024Q1A ... 2029Q4E, 24 quarters). Reported quarters are A; the rest of the current year is E. Calendarize non-December fiscal quarters.
+- Fill revenue, drivers and margins for every quarter. Actual quarters must tie to the quarterly XBRL table (Q4 there is derived as FY less Q1-Q3). Forecast quarters should carry real seasonality (e.g. Q4 ad budgets, summer travel, the NFL season for handle), not a flat quarter x 4.
+- Each driver row says how it rolls up to the year: sum (flows: bookings, impressions, handle), average (rates: take rate, CPM, hold), last (period-end counts: customers, users).
+- The engine sums the quarters into calendar years (margins revenue-weighted) and values those years. Bull/bear scenarios, capitalization and DCF inputs stay annual: one scenario value per forecast year (a year with any E quarter).
+- The next print should match your model's quarter for that period."""
 
 THESIS_GUIDE = """Trading thesis (the active position view the PM manages day to day):
 - A trade, not a rating: the narrative, what the market is missing (market_missing) and the trade structure that isolates it (trade_structure: pair or hedge leg to strip out beta, or no_trade when there is no edge).
@@ -174,6 +192,7 @@ Evidence rules:
 {STYLE_GUIDE}
 
 {MODEL_GUIDE if ctx.has_model else ""}
+{QUARTERLY_MODEL_GUIDE if ctx.has_model and ctx.quarterly_model else ""}
 
 {THESIS_GUIDE}
 
@@ -328,7 +347,7 @@ def fetch_sec(state: AnalystState) -> dict:
     ctx = _ctx(state)
     if ctx.ticker_type != "public" or not ctx.sec_ticker:
         return {}
-    sec = get_sec_data(ctx.sec_ticker)
+    sec = get_sec_data(ctx.sec_ticker, QUARTERLY_MODEL_QUARTERS if ctx.quarterly_model else DEFAULT_QUARTERS)
     errors = [f"sec: {sec['error']}"] if not sec.get("available") else [f"sec: {e}" for e in sec.get("errors", [])]
     return {"data": {"sec": sec}, "errors": errors}
 
@@ -382,7 +401,8 @@ def load_memory(state: AnalystState) -> dict:
 
 def run_conversation(ctx: TickerContext, data: dict, memory: dict, track_record: list[dict], trigger: str) -> dict:
     """Drive the two-tool conversation. Returns writeup, model inputs/outputs and usage."""
-    tools = [MODEL_TOOL_DEF, RESEARCH_TOOL_DEF] if ctx.has_model else [RESEARCH_TOOL_DEF]
+    model_tool = QUARTERLY_MODEL_TOOL_DEF if ctx.quarterly_model else MODEL_TOOL_DEF
+    tools = [model_tool, RESEARCH_TOOL_DEF] if ctx.has_model else [RESEARCH_TOOL_DEF]
     system = build_system_prompt(ctx)
     messages = [{"role": "user", "content": build_user_prompt(ctx, data, memory, track_record, trigger)}]
     comps = data.get("comps") or {}
@@ -422,8 +442,12 @@ def run_conversation(ctx: TickerContext, data: dict, memory: dict, track_record:
         for block in tool_uses:
             try:
                 if block.name == MODEL_TOOL:
-                    model_inputs = ModelInputs.model_validate(block.input)
-                    model_outputs = compute_model(model_inputs, comps, symbol=ctx.symbol)
+                    if ctx.quarterly_model:
+                        model_inputs = QuarterlyModelInputs.model_validate(block.input)
+                        model_outputs = compute_quarterly_model(model_inputs, comps, symbol=ctx.symbol)
+                    else:
+                        model_inputs = ModelInputs.model_validate(block.input)
+                        model_outputs = compute_model(model_inputs, comps, symbol=ctx.symbol)
                     content = _dump(describe_for_claude(model_outputs))
                 elif block.name == RESEARCH_TOOL:
                     if ctx.has_model and model_outputs is None:

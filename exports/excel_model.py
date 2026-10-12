@@ -3,6 +3,9 @@
 Tabs: Summary (capitalization + football field + thesis), Revenue Build, P&L, DCF, Scenarios, Comps,
 Model vs. Street, Historical Tracker, Notes.
 
+Quarterly models (model_frequency: quarterly) lay Revenue Build out as Q1-Q4 + FY blocks per year and add a
+Quarterly P&L tab; the quarters are the blue inputs and every FY column (and so the annual P&L) sums them.
+
 The P&L, DCF, capitalization and football field are live formulas off blue input cells, so assumptions
 can be changed in Excel. Scenario prices and DCF sensitivity grids are engine outputs (static values).
 
@@ -90,49 +93,72 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
         """kind: num (as is) | pct (cell holds a fraction, input is a percent) | method (1/2) | flag (1/0)."""
         inmap.append((ws.title, ref, path, kind))
 
-    years = inputs["fiscal_years"]
+    quarterly = "quarters" in inputs
+    years = outputs["fiscal_years"] if quarterly else inputs["fiscal_years"]
     n = len(years)
     first_e = next(i for i, y in enumerate(years) if y.endswith("E"))
     YC = 4  # first year column (D)
     col = {i: get_column_letter(YC + i) for i in range(n)}
     cur_col = col[first_e]
+    if quarterly:  # Revenue Build / Quarterly P&L columns: Q1 Q2 Q3 Q4 FY per year
+        quarters = inputs["quarters"]
+        q_col = {j: get_column_letter(YC + (j // 4) * 5 + j % 4) for j in range(len(quarters))}
+        rb_col = {i: get_column_letter(YC + i * 5 + 4) for i in range(n)}  # FY columns
+        rb_headers = [h for i in range(n) for h in (*quarters[i * 4:i * 4 + 4], years[i])]
+        q_span = lambda i, r: f"{q_col[i * 4]}{r}:{q_col[i * 4 + 3]}{r}"  # noqa: E731
+    else:
+        rb_col, rb_headers = col, years
+    rb_cur_col = rb_col[first_e]
+    rb_width = len(rb_headers)
 
     # ---------------- Revenue Build ----------------
     rb = wb.active
     rb.title = "Revenue Build"
     _set(rb, "B2", f"{agent_name}: Revenue Build ($mm unless noted)", font=TITLE)
     _set(rb, "B3", LEGEND, font=NOTE)
-    _year_headers(rb, 5, YC, years)
+    _year_headers(rb, 5, YC, rb_headers)
     _set(rb, "C5", "Unit", bold=True)
-    notes_col = get_column_letter(YC + n + 1)
+    notes_col = get_column_letter(YC + rb_width + 1)
     _set(rb, f"{notes_col}5", "Logic / source", bold=True)
     row = 6
     seg_rev_rows = []
     for si, seg in enumerate(inputs["revenue_segments"]):
-        _section(rb, row, f"{seg['name']}  ({seg['driver_logic']})", width=n + 3)
+        _section(rb, row, f"{seg['name']}  ({seg['driver_logic']})", width=rb_width + 3)
         row += 1
+        in_col = q_col if quarterly else col
+        labels = quarters if quarterly else years
         for di, d in enumerate(seg["drivers"]):
             _set(rb, f"B{row}", d["name"])
             _set(rb, f"C{row}", d["unit"])
             for i, v in enumerate(d["values"]):
                 if v is not None:
-                    _set(rb, f"{col[i]}{row}", v, font=BLUE, fmt='#,##0.00')
-                reg(rb, f"{col[i]}{row}", f"revenue_segments.{si}.drivers.{di}.values.{i}")
-            _set(rb, f"{notes_col}{row}", d["logic"], font=NOTE)
+                    _set(rb, f"{in_col[i]}{row}", v, font=BLUE, fmt='#,##0.00')
+                reg(rb, f"{in_col[i]}{row}", f"revenue_segments.{si}.drivers.{di}.values.{i}")
+            if quarterly:
+                rollup = d.get("rollup", "sum")
+                for i in range(n):
+                    last = f"{q_col[i * 4 + 3]}{row}"
+                    f = {"sum": f"=SUM({q_span(i, row)})", "average": f'=IFERROR(AVERAGE({q_span(i, row)}),"")',
+                         "last": f'=IF({last}="","",{last})'}[rollup]
+                    _set(rb, f"{rb_col[i]}{row}", f, fmt='#,##0.00', bold=True)
+            _set(rb, f"{notes_col}{row}", d["logic"] + (f" [year = {d.get('rollup', 'sum')} of quarters]" if quarterly else ""), font=NOTE)
             row += 1
         _set(rb, f"B{row}", f"{seg['name']} revenue", bold=True)
         _set(rb, f"C{row}", "$mm")
         for i, v in enumerate(seg["revenue_mm"]):
             if v is not None:
-                _set(rb, f"{col[i]}{row}", v, font=BLUE, fmt=MM, fill=LEVER_FILL if years[i].endswith("E") else None)
-            reg(rb, f"{col[i]}{row}", f"revenue_segments.{si}.revenue_mm.{i}")
+                _set(rb, f"{in_col[i]}{row}", v, font=BLUE, fmt=MM, fill=LEVER_FILL if labels[i].endswith("E") else None)
+            reg(rb, f"{in_col[i]}{row}", f"revenue_segments.{si}.revenue_mm.{i}")
+        if quarterly:
+            for i in range(n):
+                _set(rb, f"{rb_col[i]}{row}", f"=SUM({q_span(i, row)})", fmt=MM, bold=True)
         seg_rev_rows.append(row)
         row += 2
     total_row = row
     _set(rb, f"B{total_row}", "Total revenue", bold=True)
-    for i in range(n):
-        refs = ",".join(f"{col[i]}{r}" for r in seg_rev_rows)
-        _set(rb, f"{col[i]}{total_row}", f"=SUM({refs})", fmt=MM, bold=True)
+    for k in range(rb_width):
+        c = get_column_letter(YC + k)
+        _set(rb, f"{c}{total_row}", "=SUM(" + ",".join(f"{c}{r}" for r in seg_rev_rows) + ")", fmt=MM, bold=True)
     # SOTP block
     row = total_row + 3
     _section(rb, row, f"Sum-of-the-parts ({years[first_e]} revenue x EV/Revenue)", width=6)
@@ -145,7 +171,7 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
         if not seg.get("sotp_ev_to_revenue"):
             continue
         _set(rb, f"B{row}", seg["name"])
-        _set(rb, f"C{row}", f"={cur_col}{rev_row}", fmt=MM)
+        _set(rb, f"C{row}", f"={rb_cur_col}{rev_row}", fmt=MM)
         _set(rb, f"D{row}", seg["sotp_ev_to_revenue"], font=BLUE, fmt=MULT, fill=LEVER_FILL)
         reg(rb, f"D{row}", f"revenue_segments.{si}.sotp_ev_to_revenue")
         _set(rb, f"E{row}", f"=C{row}*D{row}", fmt=MM)
@@ -158,6 +184,46 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
         _set(rb, f"E{row}", f"=SUM(E{sotp_first}:E{row - 1})", fmt=MM, bold=True)
     rb.column_dimensions["B"].width = 38
     rb.column_dimensions[notes_col].width = 70
+
+    pct_inputs = {"gm": "gross_margin_pct", "em": "adj_ebitda_margin_pct", "sbcp": "sbc_pct_of_revenue",
+                  "dap": "da_pct_of_revenue", "capexp": "capex_pct_of_revenue"}
+
+    # ---------------- Quarterly P&L (quarterly models) ----------------
+    QR = {"rev": 6, "yoy": 7, "gm": 8, "gp": 9, "em": 10, "ebitda": 11, "sbcp": 12, "sbc": 13, "dap": 14, "da": 15,
+          "capexp": 16, "capex": 17}
+    if quarterly:
+        qp = wb.create_sheet("Quarterly P&L")
+        _set(qp, "B2", f"{agent_name}: Quarterly P&L ($mm). FY = sum of the quarters; FY margins are revenue-weighted", font=TITLE)
+        _set(qp, "B3", LEGEND + " The annual P&L links to the FY columns.", font=NOTE)
+        _year_headers(qp, 5, YC, rb_headers)
+        qlabels = {"rev": "Revenue", "yoy": "  Growth, YoY %", "gm": "Gross margin %", "gp": "Gross profit",
+                   "em": "Adj. EBITDA margin %", "ebitda": "Adj. EBITDA", "sbcp": "SBC, % of revenue", "sbc": "Stock-based compensation",
+                   "dap": "D&A, % of revenue", "da": "Depreciation & amortization",
+                   "capexp": "Capex incl. cap. software, % of revenue", "capex": "Capex"}
+        for key, r in QR.items():
+            _set(qp, f"B{r}", qlabels[key], bold=key in ("rev", "ebitda"))
+        dollars = {"gm": "gp", "em": "ebitda", "sbcp": "sbc", "dap": "da", "capexp": "capex"}
+        for k in range(rb_width):
+            c = get_column_letter(YC + k)
+            _set(qp, f"{c}{QR['rev']}", f"='Revenue Build'!{c}{total_row}", font=GREEN, fmt=MM, bold=True)
+            if k >= 5:  # the same quarter (or FY) a year earlier sits five columns left
+                p = get_column_letter(YC + k - 5)
+                _set(qp, f"{c}{QR['yoy']}", f'=IF(N({p}{QR["rev"]})=0,"",{c}{QR["rev"]}/{p}{QR["rev"]}-1)', fmt=PCT)
+        for j, label in enumerate(quarters):
+            c = q_col[j]
+            for key, field in pct_inputs.items():
+                v = inputs[field][j]
+                if v is not None:
+                    _set(qp, f"{c}{QR[key]}", v / 100, font=BLUE, fmt=PCT, fill=LEVER_FILL if label.endswith("E") else None)
+                reg(qp, f"{c}{QR[key]}", f"{field}.{j}", "pct")
+                _set(qp, f"{c}{QR[dollars[key]]}", f'=IF({c}{QR[key]}="","",{c}{QR["rev"]}*{c}{QR[key]})', fmt=MM, bold=key == "em")
+        for i in range(n):
+            c = rb_col[i]
+            for key in pct_inputs:
+                d_row = QR[dollars[key]]
+                _set(qp, f"{c}{d_row}", f"=SUM({q_span(i, d_row)})", fmt=MM, bold=True)
+                _set(qp, f"{c}{QR[key]}", f'=IF(N({c}{QR["rev"]})=0,"",{c}{d_row}/{c}{QR["rev"]})', fmt=PCT, bold=True)
+        qp.column_dimensions["B"].width = 40
 
     # ---------------- P&L ----------------
     pl = wb.create_sheet("P&L")
@@ -184,15 +250,16 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
     _set(pl, f"C{A_NWC}", inputs["nwc_pct_of_revenue_change"] / 100, font=BLUE, fmt=PCT, fill=LEVER_FILL)
     reg(pl, f"C{A_NWC}", "nwc_pct_of_revenue_change", "pct")
 
-    pct_inputs = {"gm": "gross_margin_pct", "em": "adj_ebitda_margin_pct", "sbcp": "sbc_pct_of_revenue",
-                  "dap": "da_pct_of_revenue", "capexp": "capex_pct_of_revenue"}
-    ff = {k: _fill_forward(inputs[v]) for k, v in pct_inputs.items()}
+    ff = {} if quarterly else {k: _fill_forward(inputs[v]) for k, v in pct_inputs.items()}
     for i in range(n):
         c, p = col[i], col[i - 1] if i else None
         is_e = years[i].endswith("E")
-        _set(pl, f"{c}{R['rev']}", f"='Revenue Build'!{c}{total_row}", font=GREEN, fmt=MM, bold=True)
+        _set(pl, f"{c}{R['rev']}", f"='Revenue Build'!{rb_col[i]}{total_row}", font=GREEN, fmt=MM, bold=True)
         if p:
             _set(pl, f"{c}{R['growth']}", f'=IF(OR({p}{R["rev"]}="",{p}{R["rev"]}=0),"",{c}{R["rev"]}/{p}{R["rev"]}-1)', fmt=PCT)
+        if quarterly:  # annual margins come from the quarters
+            for key in pct_inputs:
+                _set(pl, f"{c}{R[key]}", f"='Quarterly P&L'!{rb_col[i]}{QR[key]}", font=GREEN, fmt=PCT)
         for key, values in ff.items():
             if values[i] is not None:
                 _set(pl, f"{c}{R[key]}", values[i] / 100, font=BLUE, fmt=PCT, fill=LEVER_FILL if is_e else None)
@@ -540,7 +607,8 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
 
     meta = {"ticker": ticker, "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), **(model_meta or {})}
     _set(sm, "B4", f"Model version {meta.get('version', '?')} ({meta.get('source_label', 'agent')}). To change it: edit the blue cells "
-                   "(Revenue Build, P&L, Summary capitalization, DCF assumptions, Scenarios), save, and upload in Analyst Town. "
+                   + ("(Revenue Build and Quarterly P&L quarters, " if quarterly else "(Revenue Build, P&L, ")
+                   + "Summary capitalization, DCF assumptions, Scenarios), save, and upload in Analyst Town. "
                    "The engine recomputes everything else and the agents use your version from then on.", font=NOTE)
     mp = wb.create_sheet(MAP_SHEET)
     mp["A1"] = json.dumps(meta)

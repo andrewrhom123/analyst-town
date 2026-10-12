@@ -53,6 +53,7 @@ class TickerContext:
     active: bool = True
     aliases: list[str] = field(default_factory=list)
     sibling_symbols: list[str] = field(default_factory=list)  # other tickers the same analyst covers
+    quarterly_model: bool = False  # analyst builds the model by quarter (coverage.yaml model_frequency: quarterly)
 
     @property
     def has_model(self) -> bool:
@@ -73,6 +74,7 @@ def _context(t: Ticker) -> TickerContext:
         analyst_id=a.id, analyst_key=a.key, analyst_name=a.name, agent_type=a.agent_type, analyst_focus=a.focus_notes or "",
         active=t.active, aliases=t.aliases or [],
         sibling_symbols=[x.symbol for x in a.tickers if x.active and x.id != t.id],
+        quarterly_model=a.key in quarterly_model_analysts(),
     )
 
 
@@ -267,16 +269,25 @@ def list_coverage(include_inactive: bool = False) -> list[dict]:
         return out
 
 
-_basis_cache: dict = {"mtime": None, "value": {}}
+_yaml_cache: dict = {"mtime": None, "value": {}}
+
+
+def _coverage_yaml() -> dict:
+    """coverage.yaml, cached until the file changes ({} if unreadable)."""
+    try:
+        mtime = COVERAGE_FILE.stat().st_mtime
+        if _yaml_cache["mtime"] != mtime:
+            _yaml_cache.update(mtime=mtime, value=yaml.safe_load(COVERAGE_FILE.read_text(encoding="utf-8")) or {})
+        return _yaml_cache["value"]
+    except Exception:
+        return {}
 
 
 def comps_basis_overrides() -> dict[str, str]:
-    """Bucket -> multiple ('ev_to_revenue' | 'ev_to_ebitda') from coverage.yaml's comps_basis (industry convention).
-    Cached until the file changes."""
-    try:
-        mtime = COVERAGE_FILE.stat().st_mtime
-        if _basis_cache["mtime"] != mtime:
-            _basis_cache.update(mtime=mtime, value=(yaml.safe_load(COVERAGE_FILE.read_text(encoding="utf-8")) or {}).get("comps_basis") or {})
-        return _basis_cache["value"]
-    except Exception:
-        return {}
+    """Bucket -> multiple ('ev_to_revenue' | 'ev_to_ebitda') from coverage.yaml's comps_basis (industry convention)."""
+    return _coverage_yaml().get("comps_basis") or {}
+
+
+def quarterly_model_analysts() -> set[str]:
+    """Analyst keys with model_frequency: quarterly in coverage.yaml (quarterly build, more XBRL history, more tokens)."""
+    return {a.get("key") for a in _coverage_yaml().get("analysts") or [] if a.get("model_frequency") == "quarterly"}

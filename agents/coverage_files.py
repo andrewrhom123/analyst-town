@@ -145,6 +145,9 @@ def render_financial_model(ctx: TickerContext) -> str:
         "summary": (research or {}).get("financial_model"),
         "annual": [{k: r(v) for k, v in row.items()} for row in outputs["rows"]],
         "revenue_segments": [{"name": s["name"], "revenue_mm": [r(v) for v in s["revenue_mm"]]} for s in outputs["segments"]],
+        **({"quarterly": [{k: r(v) for k, v in row.items()} for row in outputs["quarterly_rows"]],
+            "quarterly_segments": [{"name": s["name"], "revenue_mm": [r(v) for v in s["revenue_mm"]]} for s in outputs["quarterly_segments"]],
+            "annual_basis": "sum of the quarters (margins revenue-weighted)"} if outputs.get("quarterly_rows") else {}),
         "capitalization": {k: r(v) for k, v in outputs["capitalization"].items()},
         "valuation": {
             "football_field": [{k: r(v) for k, v in m.items()} for m in outputs["football_field"]],

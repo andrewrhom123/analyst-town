@@ -291,9 +291,9 @@ def _pct(num: float | None, den: float | None) -> float | None:
     return round(100.0 * num / den, 2)
 
 
-def _build_table(facts: dict, quarterly: bool, periods: int) -> list[dict]:
+def _build_table(facts: dict, quarterly: bool, periods: int, extra: dict | None = None) -> list[dict]:
     revenue = _series(facts, REVENUE_CONCEPTS, quarterly)
-    metrics = {name: _series(facts, concepts, quarterly) for name, concepts in METRIC_CONCEPTS.items()}
+    metrics = {name: _series(facts, concepts, quarterly) for name, concepts in {**METRIC_CONCEPTS, **(extra or {})}.items()}
     rows = []
     for frame in sorted(revenue)[-periods:]:
         rev = revenue[frame]
@@ -314,21 +314,31 @@ def _build_table(facts: dict, quarterly: bool, periods: int) -> list[dict]:
     return rows
 
 
-def _fetch_financials(cik: int) -> dict:
+DEFAULT_QUARTERS = 8
+# Quarterly-model analysts: three years of quarters, so two full actual years plus the current year-to-date are
+# always there to build from, with D&A for the quarterly margin bridge.
+QUARTERLY_MODEL_QUARTERS = 12
+QUARTERLY_MODEL_EXTRA = {"depreciation_amortization": ["DepreciationDepletionAndAmortization", "DepreciationAndAmortization",
+                                                       "DepreciationAmortizationAndAccretionNet"]}
+
+
+def _fetch_financials(cik: int, quarters: int = DEFAULT_QUARTERS) -> dict:
     try:
         facts = _get(COMPANY_FACTS_URL.format(cik=cik)).json().get("facts", {})
     except requests.HTTPError as exc:  # very new registrants may have no XBRL yet
         return {"available": False, "error": str(exc)}
+    extra = QUARTERLY_MODEL_EXTRA if quarters > DEFAULT_QUARTERS else None
     return {
         "available": True,
+        "quarters": quarters,
         "annual": _build_table(facts, quarterly=False, periods=5),
-        "quarterly": _build_table(facts, quarterly=True, periods=8),
+        "quarterly": _build_table(facts, quarterly=True, periods=quarters, extra=extra),
     }
 
 
 # --- Public API -------------------------------------------------------------
 
-def _fetch_all(ticker: str) -> dict:
+def _fetch_all(ticker: str, quarters: int = DEFAULT_QUARTERS) -> dict:
     cik, company_name = lookup_cik(ticker)
     filings = _recent_filings(_get(SUBMISSIONS_URL.format(cik=cik)).json())
 
@@ -350,7 +360,7 @@ def _fetch_all(ticker: str) -> dict:
         "annual_report": None,
         "quarterly_report": None,
         "earnings_release": None,
-        "financials": _fetch_financials(cik),
+        "financials": _fetch_financials(cik, quarters),
         "errors": [],
     }
     for key, loader in (
@@ -391,10 +401,19 @@ def invalidate_sec_cache(ticker: str) -> None:
         s.query(DataCache).filter(DataCache.data_type == "sec", DataCache.ticker == ticker.upper()).delete()
 
 
-def get_sec_data(ticker: str) -> dict:
-    """Structured SEC data for a ticker. Never raises: failures come back as {'available': False, ...}."""
+def get_sec_data(ticker: str, quarters: int = DEFAULT_QUARTERS) -> dict:
+    """Structured SEC data for a ticker. Never raises: failures come back as {'available': False, ...}.
+
+    `quarters` is how much quarterly XBRL history to include (QUARTERLY_MODEL_QUARTERS for quarterly-model analysts).
+    A cached copy built with a different depth is refetched."""
     try:
-        return cached_fetch("sec", ticker.upper(), SEC_CACHE_TTL, lambda: _fetch_all(ticker))
+        fetch = lambda: _fetch_all(ticker, quarters)  # noqa: E731
+        data = cached_fetch("sec", ticker.upper(), SEC_CACHE_TTL, fetch)
+        fin = data.get("financials") or {}
+        if fin.get("available") and fin.get("quarters", DEFAULT_QUARTERS) != quarters:
+            invalidate_sec_cache(ticker)
+            data = cached_fetch("sec", ticker.upper(), SEC_CACHE_TTL, fetch)
+        return data
     except Exception as exc:
         logger.warning("SEC data unavailable for %s: %s", ticker, exc)
         return {"available": False, "ticker": ticker.upper(), "error": str(exc)}

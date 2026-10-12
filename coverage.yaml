@@ -13,6 +13,10 @@
 #                 | private (news only) | index (prices, no SEC)
 #   price_symbol  quote symbol if different from symbol (e.g. DXY -> UUP proxy)
 #   news_query / news_keywords / competitors / comps_buckets / focus_notes (optional)
+#
+# Analyst fields: key, name, type, color, focus_notes, tickers, and optionally
+#   model_frequency  quarterly = the analyst builds every quarter (12 quarters of XBRL history; the engine sums
+#                    them into the annual years it values). Costs more tokens per deep dive. Default: annual.
 
 # Valuation multiple per comps bucket, following how the sell side covers each industry. Buckets not listed
 # here pick automatically: EV/EBITDA when 60%+ of the bucket earns a 10%+ LTM EBITDA margin, else EV/Revenue.
@@ -172,6 +176,7 @@ analysts:
   - key: internet
     name: Internet Platforms Analyst
     type: sector
+    model_frequency: quarterly
     color: "#4ade80"
     focus_notes: >-
       Internet platforms and marketplaces: ad tech, travel, delivery and mobility, online betting and prediction

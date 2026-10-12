@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from agents.coverage_files import refresh_files
-from agents.financial_model import ModelInputError, ModelInputs, compute_model
+from agents.financial_model import ModelInputError, is_quarterly, parse_and_compute, quarter_years
 from agents.registry import get_context
 from database.db import session_scope
 from database.models import FinancialModel
@@ -98,7 +98,8 @@ def _convert(raw, kind: str, cell: str):
 
 
 def _label(path: str, inputs: dict) -> str:
-    years = inputs.get("fiscal_years", [])
+    years = inputs.get("quarters") or inputs.get("fiscal_years", [])  # quarterly models index per-period inputs by quarter
+    annual_years = quarter_years(years) if is_quarterly(inputs) else years
     parts = path.split(".")
     yr = lambda i: years[int(i)] if i.isdigit() and int(i) < len(years) else i  # noqa: E731
     names = {"gross_margin_pct": "Gross margin", "adj_ebitda_margin_pct": "Adj. EBITDA margin", "sbc_pct_of_revenue": "SBC % revenue",
@@ -121,7 +122,7 @@ def _label(path: str, inputs: dict) -> str:
     if parts[0] == "scenarios":
         if parts[1] == "base_probability_pct":
             return "Base case probability"
-        e_years = [y for y in years if y.endswith("E")]
+        e_years = [y for y in annual_years if y.endswith("E")]
         field = {"probability_pct": "probability", "revenue_growth_pct": "revenue growth", "adj_ebitda_margin_pct": "EBITDA margin"}[parts[2]]
         return f"{parts[1].title()} {field}" + (f" {e_years[int(parts[3])]}" if len(parts) > 3 and int(parts[3]) < len(e_years) else "")
     return f"{names.get(parts[0], parts[0])}" + (f" {yr(parts[1])}" if len(parts) > 1 else "")
@@ -198,13 +199,11 @@ def apply_upload(symbol: str, data: bytes, note: str | None = None) -> dict:
     # models built before an input existed: fill neutral defaults so they still validate
     inputs.setdefault("private_market", {"marks": [], "applied_ev_to_revenue": None,
                                          "rationale": "Not set (model predates private-market inputs)"})
-    try:
-        model = ModelInputs.model_validate(inputs)
-    except ValidationError as exc:
-        raise ModelUploadError("Some inputs are invalid: " + "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()[:5]))
     comps = {name: b.get("peers", []) for name, b in ((base_outputs.get("comps") or {}).get("buckets") or {}).items()}
     try:
-        outputs = compute_model(model, comps, symbol=ctx.symbol)
+        model, outputs = parse_and_compute(inputs, comps, symbol=ctx.symbol)
+    except ValidationError as exc:
+        raise ModelUploadError("Some inputs are invalid: " + "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()[:5]))
     except ModelInputError as exc:
         raise ModelUploadError(str(exc))
     with session_scope() as s:

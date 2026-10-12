@@ -8,6 +8,9 @@ Structure mirrors the team's BLSH / PUBM models: Summary (capitalization + footb
 Revenue Build, P&L, Scenarios, DCF, Comps (bucketed by valuation logic), Model vs. Street,
 Historical Tracker.
 
+Analysts set to `model_frequency: quarterly` in coverage.yaml build every quarter instead (QuarterlyModelInputs);
+annualize() sums the quarters into calendar years and the same annual engine values them.
+
 Units: USD millions unless noted; percentages are whole numbers (25.0 = 25%).
 """
 
@@ -133,6 +136,48 @@ class ModelInputs(BaseModel):
 
 
 PER_YEAR_FIELDS = ["gross_margin_pct", "adj_ebitda_margin_pct", "sbc_pct_of_revenue", "da_pct_of_revenue", "capex_pct_of_revenue"]
+
+
+# --- Quarterly schema (analysts with model_frequency: quarterly) ------------------------
+# The analyst builds every quarter; the engine sums the quarters into calendar years and runs the same annual
+# P&L, DCF, comps and scenario math on them. Scenarios, capitalization and valuation inputs stay annual.
+
+QUARTER_LABEL = re.compile(r"^(\d{4})Q([1-4])([AE])$")
+
+
+class QuarterlyDriverRow(DriverRow):
+    values: list[float | None] = Field(description="One value per quarters entry; null where not applicable")
+    rollup: Literal["sum", "average", "last"] = Field(
+        description="How quarters roll up to the year: sum for flows (volume, bookings, impressions), average for "
+                    "rates and prices (take rate, CPM, spread), last for point-in-time counts (customers at period end)")
+
+
+class QuarterlyRevenueSegment(RevenueSegment):
+    drivers: list[QuarterlyDriverRow] = Field(description="Operating drivers behind the segment (may be empty if none disclosed)")
+    revenue_mm: list[float | None] = Field(description="Segment revenue in $mm, one per quarters entry")
+
+
+class QuarterlyModelInputs(BaseModel):
+    quarters: list[str] = Field(
+        description="Calendar-quarter labels, oldest first, covering whole calendar years: the 2 most recent full actual "
+        "years then through the 4th forecast year, e.g. ['2024Q1A', ..., '2026Q2A', '2026Q3E', ..., '2029Q4E']. Reported "
+        "quarters are A, the rest E. Calendarize non-December fiscal quarters.")
+    revenue_segments: list[QuarterlyRevenueSegment]
+    gross_margin_pct: list[float | None] = Field(description="One per quarter")
+    adj_ebitda_margin_pct: list[float | None] = Field(description="One per quarter")
+    sbc_pct_of_revenue: list[float | None] = Field(description="One per quarter")
+    da_pct_of_revenue: list[float | None] = Field(description="One per quarter")
+    capex_pct_of_revenue: list[float | None] = Field(description="Capex including capitalized software, one per quarter")
+    nwc_pct_of_revenue_change: float = Field(description="Change in net working capital as % of the change in revenue")
+    cash_tax_rate_pct: float
+    capitalization: Capitalization
+    dcf: DCFAssumptions
+    scenarios: Scenarios = Field(description="Annual: one growth and margin value per forecast year (a year with any E quarter)")
+    comps: CompsView
+    private_market: PrivateMarketView
+    next_print: NextPrint
+    key_assumptions: list[str] = Field(description="The 4-8 assumptions that drive the answer, each with its basis")
+    model_notes: str = Field(description="Caveats: accounting basis, calendarization, pro forma treatment, data gaps")
 
 
 # --- Helpers ------------------------------------------------------------------------
@@ -475,6 +520,165 @@ def compute_model(m: ModelInputs, comps: dict | None = None, valuation_date: dat
     return outputs
 
 
+# --- Quarterly models: validate the quarters, roll them up to years, compute -------------
+
+def is_quarterly(inputs: dict) -> bool:
+    return "quarters" in (inputs or {})
+
+
+def quarter_years(quarters: list[str]) -> list[str]:
+    """Annual labels for a quarterly model: a year is actual (A) only when all four quarters are reported."""
+    years: dict[int, str] = {}
+    for label in quarters:
+        y, _, kind = QUARTER_LABEL.match(label).groups()
+        years[int(y)] = "E" if years.get(int(y)) == "E" or kind == "E" else "A"
+    return [f"{y}{k}" for y, k in years.items()]
+
+
+def validate_quarters(q: QuarterlyModelInputs) -> None:
+    errors, parsed = [], []
+    for label in q.quarters:
+        match = QUARTER_LABEL.match(label)
+        if not match:
+            errors.append(f"quarters label {label!r} must look like '2026Q3E' or '2025Q4A'")
+        else:
+            parsed.append((int(match.group(1)), int(match.group(2)), match.group(3)))
+    if errors:
+        raise ModelInputError("; ".join(errors))
+    if not parsed:
+        raise ModelInputError("quarters is empty")
+    index = [y * 4 + qn - 1 for y, qn, _ in parsed]
+    if index != list(range(index[0], index[0] + len(index))):
+        errors.append("quarters must be consecutive calendar quarters, oldest first")
+    elif parsed[0][1] != 1 or parsed[-1][1] != 4:
+        errors.append("quarters must cover whole calendar years (start at Q1, end at Q4)")
+    kinds = "".join(k for _, _, k in parsed)
+    if "EA" in kinds or "A" not in kinds or "E" not in kinds:
+        errors.append("quarters needs actual (A) quarters followed by forecast (E) quarters")
+    n = len(q.quarters)
+    for seg in q.revenue_segments:
+        if len(seg.revenue_mm) != n:
+            errors.append(f"segment {seg.name!r}: revenue_mm has {len(seg.revenue_mm)} values, expected {n} (one per quarter)")
+        for d in seg.drivers:
+            if len(d.values) != n:
+                errors.append(f"segment {seg.name!r} driver {d.name!r}: {len(d.values)} values, expected {n} (one per quarter)")
+    for name in PER_YEAR_FIELDS:
+        values = getattr(q, name)
+        if len(values) != n:
+            errors.append(f"{name} has {len(values)} values, expected {n} (one per quarter)")
+        elif any(v is None for v, (_, _, k) in zip(values, parsed) if k == "E"):
+            errors.append(f"{name} must be filled for every forecast quarter")
+    if not errors:
+        empty = [label for i, label in enumerate(q.quarters)
+                 if label.endswith("E") and all(s.revenue_mm[i] is None for s in q.revenue_segments)]
+        if empty:
+            errors.append(f"no segment revenue in forecast quarters {', '.join(empty)}")
+    if errors:
+        raise ModelInputError("; ".join(errors))
+
+
+def _quarter_revenue(q: QuarterlyModelInputs) -> list[float | None]:
+    out = []
+    for i in range(len(q.quarters)):
+        vals = [s.revenue_mm[i] for s in q.revenue_segments if s.revenue_mm[i] is not None]
+        out.append(sum(vals) if vals else None)
+    return out
+
+
+def _year_slices(quarters: list[str]) -> list[range]:
+    return [range(i, i + 4) for i in range(0, len(quarters), 4)]
+
+
+def _roll_sum(values: list[float | None]) -> float | None:
+    vals = [v for v in values if v is not None]
+    return sum(vals) if vals else None
+
+
+def _roll_driver(values: list[float | None], how: str) -> float | None:
+    vals = [v for v in values if v is not None]
+    if not vals:
+        return None
+    if how == "last":
+        return values[-1] if values[-1] is not None else vals[-1]
+    if how == "average":
+        return sum(vals) / len(vals)
+    return sum(vals) if len(vals) == len(values) else None  # a flow with a missing quarter has no annual total
+
+
+def _roll_pct(pcts: list[float | None], revenue: list[float | None]) -> float | None:
+    """Revenue-weighted annual margin: the annual dollar line over annual revenue."""
+    pairs = [(p, r) for p, r in zip(pcts, revenue) if p is not None]
+    if not pairs:
+        return None
+    weighted = [(p, r) for p, r in pairs if r]
+    if weighted:
+        return sum(p * r for p, r in weighted) / sum(r for _, r in weighted)
+    return sum(p for p, _ in pairs) / len(pairs)
+
+
+def annualize(q: QuarterlyModelInputs) -> ModelInputs:
+    """Sum the quarterly build into calendar years: the annual model the valuation engine runs on."""
+    validate_quarters(q)
+    slices = _year_slices(q.quarters)
+    revenue = _quarter_revenue(q)
+    pick = lambda values, s: [values[i] for i in s]  # noqa: E731
+    segments = [RevenueSegment(
+        name=seg.name, driver_logic=seg.driver_logic, sotp_ev_to_revenue=seg.sotp_ev_to_revenue, sotp_rationale=seg.sotp_rationale,
+        revenue_mm=[_roll_sum(pick(seg.revenue_mm, s)) for s in slices],
+        drivers=[DriverRow(name=d.name, unit=d.unit, logic=d.logic, values=[_roll_driver(pick(d.values, s), d.rollup) for s in slices])
+                 for d in seg.drivers],
+    ) for seg in q.revenue_segments]
+    common = q.model_dump(exclude={"quarters", "revenue_segments", *PER_YEAR_FIELDS})
+    return ModelInputs.model_validate({
+        **common,
+        "fiscal_years": quarter_years(q.quarters),
+        "revenue_segments": [s.model_dump() for s in segments],
+        **{name: [_roll_pct(pick(getattr(q, name), s), pick(revenue, s)) for s in slices] for name in PER_YEAR_FIELDS},
+    })
+
+
+def quarterly_rows(q: QuarterlyModelInputs) -> list[dict]:
+    """Quarterly P&L down to adj. EBITDA and capex (taxes, NWC and FCF are modelled on the annual roll-up)."""
+    revenue = _quarter_revenue(q)
+    gm, em = _fill_forward(q.gross_margin_pct), _fill_forward(q.adj_ebitda_margin_pct)
+    sbc, da, capex = _fill_forward(q.sbc_pct_of_revenue), _fill_forward(q.da_pct_of_revenue), _fill_forward(q.capex_pct_of_revenue)
+    mult = lambda rev, pct: rev * pct / 100.0 if rev is not None and pct is not None else None  # noqa: E731
+    rows = []
+    for i, label in enumerate(q.quarters):
+        rev = revenue[i]
+        yoy = revenue[i - 4] if i >= 4 else None
+        qoq = revenue[i - 1] if i >= 1 else None
+        rows.append({
+            "quarter": label, "forecast": label.endswith("E"), "revenue": rev,
+            "revenue_growth_yoy_pct": (rev / yoy - 1) * 100 if rev is not None and yoy else None,
+            "revenue_growth_qoq_pct": (rev / qoq - 1) * 100 if rev is not None and qoq else None,
+            "gross_profit": mult(rev, gm[i]), "gross_margin_pct": gm[i],
+            "adj_ebitda": mult(rev, em[i]), "adj_ebitda_margin_pct": em[i],
+            "sbc": mult(rev, sbc[i]), "da": mult(rev, da[i]), "capex": mult(rev, capex[i]),
+        })
+    return rows
+
+
+def compute_quarterly_model(q: QuarterlyModelInputs, comps: dict | None = None, valuation_date: date | None = None,
+                            symbol: str = "SUBJECT") -> dict:
+    outputs = compute_model(annualize(q), comps, valuation_date, symbol)
+    outputs["frequency"] = "quarterly"
+    outputs["quarters"] = q.quarters
+    outputs["quarterly_rows"] = quarterly_rows(q)
+    outputs["quarterly_segments"] = [{"name": s.name, "revenue_mm": s.revenue_mm} for s in q.revenue_segments]
+    return outputs
+
+
+def parse_and_compute(inputs: dict, comps: dict | None = None, valuation_date: date | None = None,
+                      symbol: str = "SUBJECT") -> tuple[BaseModel, dict]:
+    """Validate stored or submitted inputs with the right schema (annual or quarterly) and compute the model."""
+    if is_quarterly(inputs):
+        q = QuarterlyModelInputs.model_validate(inputs)
+        return q, compute_quarterly_model(q, comps, valuation_date, symbol)
+    m = ModelInputs.model_validate(inputs)
+    return m, compute_model(m, comps, valuation_date, symbol)
+
+
 # --- Relative value: who is rich vs cheap inside each comps bucket ------------------------------
 
 RICH_CHEAP_BAND_PCT = 15.0  # beyond +/- this vs fair multiple: rich / cheap
@@ -626,8 +830,15 @@ def describe_for_claude(outputs: dict) -> dict:
         return round(x, nd) if isinstance(x, (int, float)) else x
 
     rows = [{k: r(v) for k, v in row.items()} for row in outputs["rows"]]
+    quarterly = {}
+    if outputs.get("quarterly_rows"):
+        quarterly = {"quarterly_model": [{k: r(v) for k, v in row.items() if k in (
+            "quarter", "revenue", "revenue_growth_yoy_pct", "gross_margin_pct", "adj_ebitda", "adj_ebitda_margin_pct")}
+            for row in outputs["quarterly_rows"]],
+            "annual_note": "annual_model is the sum of your quarters (margins revenue-weighted); valuation runs on it"}
     return {
         "note": "Computed by the model engine from your inputs. Use these exact figures in the memo.",
+        **quarterly,
         "current_year": outputs["current_year"],
         "annual_model": [{k: row[k] for k in ("year", "revenue", "revenue_growth_pct", "gross_margin_pct", "adj_ebitda",
                                               "adj_ebitda_margin_pct", "fcf", "fcf_margin_pct", "ufcf")} for row in rows],
