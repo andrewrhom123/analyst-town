@@ -1,31 +1,30 @@
 """Financial model versions, and the PM's edit round trip.
 
-Every model is a version (oldest = v1): agent deep dives create one, and so does the PM uploading an edited
-workbook. Download any version as Excel; edit the blue input cells; upload. The workbook carries a hidden
-"_model_map" sheet (which version it came from, and which cell is which model input), so the upload is read
-back cell by cell into the model inputs, validated, recomputed by the engine and saved as the new latest
-version (source "pm_upload"). From then on the PM's version is what agents use: their files, chat answers,
-thesis updates (one is queued to re-anchor the trading levels) and the next deep dive, which starts from the
-PM's assumptions and must justify any change to them.
+Every model is a version (oldest = v1): agent deep dives and rebuilds create one, and so does the PM uploading
+an edited workbook. The upload is taken whole (agents.model_workbook): the file itself becomes the model that
+"download latest" returns, the input cells (found via the hidden "_model_map" tab, even after rows or tabs were
+added) feed the engine, and every tab, plus what the PM changed beyond the inputs, goes to the agents. From then on
+the agents work in the PM's workbook: their next deep dive / rebuild writes its updates into that same file
+(a new version), thesis updates anchor on it, and the PM downloads the latest one, whoever changed it last.
 """
 
 import copy
-import io
-import json
+import logging
 from datetime import datetime, timezone
 
-from openpyxl import load_workbook
 from pydantic import ValidationError
 from sqlalchemy import select
 
+from agents import model_workbook as mw
 from agents.coverage_files import refresh_files
 from agents.financial_model import ModelInputError, is_quarterly, parse_and_compute, quarter_years
 from agents.registry import get_context
 from database.db import session_scope
-from database.models import FinancialModel
-from exports.excel_model import MAP_SHEET
+from database.models import FinancialModel, ResearchOutput
+from exports.excel_model import build_workbook
 
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+logger = logging.getLogger(__name__)
 
 
 class ModelUploadError(ValueError):
@@ -47,15 +46,18 @@ def list_versions(symbol: str) -> list[dict]:
         return []
     with session_scope() as s:
         rows = s.scalars(select(FinancialModel).where(FinancialModel.ticker_id == ctx.ticker_id).order_by(FinancialModel.date, FinancialModel.id)).all()
+        with_wb = mw.ids_with_workbook([fm.id for fm in rows])
         out = []
         for v, fm in enumerate(rows, 1):
             a = fm.assumptions or {}
             o = a.get("outputs") or {}
+            wv = a.get("workbook_valuation") or {}  # the PM workbook's own formulas, when it has them
             dcf = next((m for m in o.get("football_field", []) if m["method"] == "DCF"), {})
             out.append({"model_id": fm.id, "version": v, "date": _aware(fm.date).isoformat(), "source": _source(fm),
-                        "note": a.get("note"), "changes": a.get("changes") or [], "parent_model_id": a.get("parent_model_id"),
-                        "probability_weighted_price": o.get("probability_weighted_price"),
-                        "dcf_price": dcf.get("implied_price"), "latest": v == len(rows)})
+                        "note": a.get("note"), "changes": a.get("changes") or [], "structure": a.get("structure") or [],
+                        "parent_model_id": a.get("parent_model_id"), "workbook": fm.id in with_wb,
+                        "probability_weighted_price": wv.get("Probability-weighted", o.get("probability_weighted_price")),
+                        "dcf_price": wv.get("DCF", dcf.get("implied_price")), "latest": v == len(rows)})
         return out[::-1]
 
 
@@ -63,6 +65,29 @@ def version_meta(symbol: str, model_id: int) -> dict:
     v = next((x for x in list_versions(symbol) if x["model_id"] == model_id), None)
     return {"model_id": model_id, "version": v["version"] if v else None,
             "source_label": "your edits" if v and v["source"] == "pm_upload" else "agent"}
+
+
+def generated_workbook(symbol: str, model_id: int) -> bytes:
+    """A version exported fresh from its inputs/outputs (versions that don't carry the PM's workbook)."""
+    from agents.base_analyst import build_track_record
+    from data_sources.cache import get_cached
+
+    ctx = get_context(symbol)
+    with session_scope() as s:
+        fm = s.get(FinancialModel, model_id)
+        research = s.get(ResearchOutput, fm.research_id) if fm.research_id else None
+        record = {**(research.research_memo if research else {}), "date": fm.date.date().isoformat()}
+        inputs, outputs = fm.assumptions["inputs"], fm.assumptions["outputs"]
+    sec = get_cached("sec", (ctx.sec_ticker or ctx.symbol).upper(), None)
+    return build_workbook(ctx.analyst_name, ctx.symbol, record, inputs, outputs, build_track_record(ctx.ticker_id, sec),
+                          model_meta=version_meta(ctx.symbol, model_id))
+
+
+def export_workbook(symbol: str, model_id: int) -> bytes:
+    """The workbook to download for a version: the PM's own (as last edited by the PM or an agent) if the
+    version carries one, else a fresh export."""
+    wb = mw.get(model_id)
+    return wb.data if wb is not None else generated_workbook(symbol, model_id)
 
 
 # --- Reading an edited workbook ---------------------------------------------------------
@@ -128,43 +153,17 @@ def _label(path: str, inputs: dict) -> str:
     return f"{names.get(parts[0], parts[0])}" + (f" {yr(parts[1])}" if len(parts) > 1 else "")
 
 
-def read_workbook(data: bytes) -> tuple[dict, list[tuple]]:
-    """(meta, [(sheet, cell, path, kind, value)]) from an uploaded workbook exported by Analyst Town."""
-    if len(data) > MAX_UPLOAD_BYTES:
-        raise ModelUploadError("File is larger than 10 MB")
-    try:
-        values = load_workbook(io.BytesIO(data), data_only=True)  # what Excel last calculated
-        formulas = load_workbook(io.BytesIO(data), data_only=False)
-    except Exception:
-        raise ModelUploadError("That isn't an .xlsx workbook")
-    if MAP_SHEET not in values.sheetnames:
-        raise ModelUploadError("This workbook wasn't exported from Analyst Town (no model map). Download the latest model and edit that.")
-    mp = values[MAP_SHEET]
-    try:
-        meta = json.loads(mp["A1"].value or "{}")
-    except ValueError:
-        meta = {}
-    cells = []
-    for sheet, cell, path, kind in mp.iter_rows(min_row=3, values_only=True):
-        if not sheet:
-            continue
-        if sheet not in values.sheetnames:
-            raise ModelUploadError(f"Sheet '{sheet}' is missing; keep the tab names as exported")
-        raw = values[sheet][cell].value
-        if raw is None:  # never calculated (e.g. saved by a tool that doesn't compute formulas): use the literal
-            literal = formulas[sheet][cell].value
-            raw = None if isinstance(literal, str) and literal.startswith("=") else literal
-        cells.append((sheet, cell, path, kind, raw))
-    return meta, cells
-
-
 # --- Applying an upload --------------------------------------------------------------------
 
 def apply_upload(symbol: str, data: bytes, note: str | None = None) -> dict:
     ctx = get_context(symbol)
     if ctx is None:
         raise ModelUploadError(f"{symbol} is not covered")
-    meta, cells = read_workbook(data)
+    try:
+        up = mw.Book(data)
+        meta, _entries, up_names = mw.read_map(up)
+    except mw.WorkbookError as exc:
+        raise ModelUploadError(str(exc))
     if meta.get("ticker") and meta["ticker"].upper() != ctx.symbol:
         raise ModelUploadError(f"This workbook is for {meta['ticker']}, not {ctx.symbol}")
     with session_scope() as s:
@@ -176,15 +175,24 @@ def apply_upload(symbol: str, data: bytes, note: str | None = None) -> dict:
         base_id, research_id = base.id, base.research_id
         base_inputs = copy.deepcopy(base.assumptions["inputs"])
         base_outputs = base.assumptions.get("outputs") or {}
+        base_structure = base.assumptions.get("structure") or []
         margin_analysis = base.margin_analysis
+    # the version the PM downloaded, as it was exported: where every input cell was, and what to diff against
+    base_wb = mw.get(base_id)
+    ref = mw.Book(base_wb.data if base_wb is not None else generated_workbook(ctx.symbol, base_id))
+    _ref_meta, ref_entries, _ = mw.read_map(ref)
+    entries, missing = mw.resolve_map(up, ref, ref_entries, up_names)
+
     inputs = copy.deepcopy(base_inputs)
     changes = []
-    for sheet, cell, path, kind, raw in cells:
-        new = _convert(raw, kind, f"{sheet}!{cell}")
+    for sheet, cell, path, kind in entries:
+        if kind == "out":
+            continue
+        new = _convert(up.value(sheet, cell), kind, f"{sheet}!{cell}")
         try:
             old = _get_path(base_inputs, path)
         except (KeyError, IndexError, TypeError):
-            raise ModelUploadError(f"{sheet}!{cell} maps to {path}, which doesn't exist in the base model")
+            continue  # a map entry the base model doesn't have (older export)
         if new is None and old is None:
             continue
         if isinstance(old, (int, float)) and isinstance(new, (int, float)) and not isinstance(old, bool):
@@ -194,8 +202,12 @@ def apply_upload(symbol: str, data: bytes, note: str | None = None) -> dict:
             continue
         _set_path(inputs, path, new)
         changes.append({"path": path, "label": _label(path, base_inputs), "cell": f"{sheet}!{cell}", "old": old, "new": new})
-    if not changes:
-        raise ModelUploadError("No changes found in the blue input cells")
+    input_cells = {(sh, c) for sh, c, _p, k in entries if k != "out"}
+    structure = mw.structure_changes(ref, up, input_cells)
+    if not changes and not structure:
+        raise ModelUploadError("No changes found compared with the version you downloaded")
+    values = mw.recalc(data) if mw.needs_recalc(up) else None
+    wb_valuation = mw.valuation(up, entries, values)
     # models built before an input existed: fill neutral defaults so they still validate
     inputs.setdefault("private_market", {"marks": [], "applied_ev_to_revenue": None,
                                          "rationale": "Not set (model predates private-market inputs)"})
@@ -206,28 +218,46 @@ def apply_upload(symbol: str, data: bytes, note: str | None = None) -> dict:
         raise ModelUploadError("Some inputs are invalid: " + "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()[:5]))
     except ModelInputError as exc:
         raise ModelUploadError(str(exc))
+    latest_id = _latest_id(ctx.ticker_id)
     with session_scope() as s:
         fm = FinancialModel(ticker_id=ctx.ticker_id, research_id=research_id, revenue_projections=outputs["rows"],
                             margin_analysis=margin_analysis,
                             assumptions={"inputs": model.model_dump(), "outputs": outputs, "source": "pm_upload",
                                          "note": (note or "").strip()[:1000] or None, "parent_model_id": base_id,
-                                         "changes": changes, "uploaded_at": datetime.now(timezone.utc).isoformat()})
+                                         "changes": changes, "structure": structure or base_structure,
+                                         "workbook_valuation": wb_valuation, "missing_inputs": missing,
+                                         "uploaded_at": datetime.now(timezone.utc).isoformat()})
         s.add(fm)
         s.flush()
         new_id = fm.id
+    versions = list_versions(ctx.symbol)
+    mw.save(new_id, data, entries, {"ticker": ctx.symbol, **version_meta(ctx.symbol, new_id),
+                                    "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds")},
+            mw.digest(up, values), {"structure": structure or base_structure, "valuation": wb_valuation, "missing": missing,
+                                    "sheets": up.sheets})
     refresh_files(ctx.symbol, ["financial_model.json"])
     queued = None
     try:  # re-anchor the trading levels on the PM's model (light model, ~$0.06, runs within research hours)
         from scheduler.jobs import enqueue
-        summary = "; ".join(f"{c['label']}: {_fmt(c['old'])} -> {_fmt(c['new'])}" for c in changes[:8])
+        summary = "; ".join([f"{c['label']}: {_fmt(c['old'])} -> {_fmt(c['new'])}" for c in changes[:6]] + structure[:4])
         queued = enqueue("thesis_update", ctx.symbol, f"PM edited the model: {summary}"[:500], "pm_model")
     except Exception:
         pass
-    versions = list_versions(ctx.symbol)
     ff = outputs["football_field"]
-    return {"model_id": new_id, "version": versions[0]["version"], "based_on_version": next((v["version"] for v in versions if v["model_id"] == base_id), None),
-            "changes": changes, "football_field": [{k: m[k] for k in ("method", "implied_price", "upside_pct")} for m in ff],
-            "probability_weighted_price": outputs["probability_weighted_price"], "thesis_update_queued": bool(queued)}
+    based_on = next((v["version"] for v in versions if v["model_id"] == base_id), None)
+    return {"model_id": new_id, "version": versions[0]["version"], "based_on_version": based_on,
+            "superseded_version": next((v["version"] for v in versions if v["model_id"] == latest_id), None) if latest_id != base_id else None,
+            "changes": changes, "structure": structure,
+            "missing_inputs": [p if p.startswith("valuation.") else _label(p, base_inputs) for p in missing],
+            "football_field": [{k: m[k] for k in ("method", "implied_price", "upside_pct")} for m in ff],
+            "probability_weighted_price": outputs["probability_weighted_price"], "workbook_valuation": wb_valuation,
+            "thesis_update_queued": bool(queued)}
+
+
+def _latest_id(ticker_id: int) -> int | None:
+    with session_scope() as s:
+        return s.scalar(select(FinancialModel.id).where(FinancialModel.ticker_id == ticker_id)
+                        .order_by(FinancialModel.date.desc(), FinancialModel.id.desc()).limit(1))
 
 
 def _fmt(v) -> str:
@@ -241,6 +271,46 @@ def model_for_agent(ticker_id: int) -> dict | None:
         if fm is None or not (fm.assumptions or {}).get("inputs"):
             return None
         a = fm.assumptions
-        return {"source": a.get("source") or "agent", "date": _aware(fm.date).date().isoformat(), "note": a.get("note"),
-                "pm_changes": [{k: c[k] for k in ("label", "old", "new")} for c in a.get("changes") or []],
-                "inputs": a["inputs"]}
+        model_id = fm.id
+        out = {"model_id": model_id, "source": a.get("source") or "agent", "date": _aware(fm.date).date().isoformat(),
+               "note": a.get("note"), "inputs": a["inputs"],
+               "pm_changes": [{k: c[k] for k in ("label", "old", "new")} for c in a.get("changes") or []]}
+    out["workbook"] = mw.for_agent(model_id)  # the PM's workbook, once they've uploaded one
+    return out
+
+
+def save_agent_version(ctx, base: dict | None, wb_session: "mw.Session | None", inputs: dict, outputs: dict, comps: dict,
+                       research_id: int | None, margin_analysis: dict, extra: dict | None = None) -> int | None:
+    """Save an agent-built model as the next version. When the latest version carries the PM's workbook, the
+    agent's inputs and staged cell edits are written into that workbook (the same file goes on). Returns the new
+    model id, or None when the PM uploaded a newer version while the agent was working (theirs stays latest)."""
+    latest = _latest_id(ctx.ticker_id)
+    if base is not None and latest != base.get("model_id"):
+        with session_scope() as s:
+            newer = s.get(FinancialModel, latest)
+            if newer is not None and _source(newer) == "pm_upload":
+                logger.info("%s: PM uploaded v-new during the run; agent model not saved over it", ctx.symbol)
+                return None
+    assumptions = {"inputs": inputs, "outputs": outputs, **(extra or {})}
+    built = None
+    if wb_session is not None and base is not None:
+        try:
+            built = wb_session.build(base["inputs"], inputs, comps, ctx.symbol, _label)
+            assumptions.update({"inputs": built["inputs"], "outputs": built["outputs"], "changes": built["changes"],
+                                "structure": built["info"].get("structure") or [],
+                                "workbook_valuation": built["info"].get("valuation") or {},
+                                "parent_model_id": base["model_id"]})
+        except Exception:
+            logger.exception("%s: couldn't write the update into the PM's workbook; saving a fresh model", ctx.symbol)
+            built = None
+    with session_scope() as s:
+        fm = FinancialModel(ticker_id=ctx.ticker_id, research_id=research_id, revenue_projections=assumptions["outputs"]["rows"],
+                            margin_analysis=margin_analysis, assumptions=assumptions)
+        s.add(fm)
+        s.flush()
+        new_id = fm.id
+    if built is not None:
+        mw.save(new_id, built["data"], built["entries"], {"ticker": ctx.symbol, **version_meta(ctx.symbol, new_id),
+                                                         "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds")},
+                built["digest"], built["info"])
+    return new_id

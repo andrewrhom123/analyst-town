@@ -235,10 +235,16 @@ def _model_view(ticker_id: int) -> dict | None:
             return None
         a = fm.assumptions or {}
         o = a.get("outputs") or {}
-        return {"source": "PM's edited model" if a.get("source") == "pm_upload" else "your model",
-                "pm_note": a.get("note"), "pm_changes": [{k: c[k] for k in ("label", "old", "new")} for c in a.get("changes") or []],
+        view = {"source": "PM's edited model" if a.get("source") == "pm_upload" else "your model",
+                "pm_note": a.get("note"), "latest_changes": [{k: c[k] for k in ("label", "old", "new")} for c in (a.get("changes") or [])[:30]],
                 "football_field": [{k: m.get(k) for k in ("method", "implied_price", "upside_pct")} for m in o.get("football_field", [])],
                 "probability_weighted_price": o.get("probability_weighted_price")}
+        if a.get("workbook_valuation") or a.get("structure"):  # the PM's workbook is the shared model: its own numbers win
+            view["pm_workbook"] = {"note": "The PM's workbook is the model of record; where its valuation differs from the "
+                                           "engine's football field, anchor on the workbook.",
+                                   "valuation_per_share": a.get("workbook_valuation") or {},
+                                   "pm_changes_beyond_inputs": (a.get("structure") or [])[:25]}
+        return view
 
 
 def build_update_prompt(ctx: TickerContext, trigger: str, detail: str) -> str:

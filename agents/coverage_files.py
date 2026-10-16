@@ -134,6 +134,7 @@ def render_financial_model(ctx: TickerContext) -> str:
         fm = s.scalar(select(FinancialModel).where(FinancialModel.ticker_id == ctx.ticker_id).order_by(FinancialModel.date.desc()).limit(1))
         inputs = fm.assumptions.get("inputs") or {}
         as_of = fm.date.date().isoformat()
+        wb_valuation, structure = fm.assumptions.get("workbook_valuation"), fm.assumptions.get("structure")
 
     def r(x, nd=2):
         return round(x, nd) if isinstance(x, float) else x
@@ -163,6 +164,10 @@ def render_financial_model(ctx: TickerContext) -> str:
         "private_market": outputs.get("private_market"),
         "excel": f"/coverage/{ctx.symbol}/model.xlsx",
     }
+    if wb_valuation or structure:  # the PM's own workbook is the model of record
+        doc["pm_workbook"] = {"note": "This model is the PM's workbook; its own valuation (below) is the reference where it "
+                                      "differs from the engine figures above.",
+                              "valuation_per_share": wb_valuation or {}, "pm_changes_beyond_inputs": (structure or [])[:25]}
     return json.dumps(doc, indent=2, default=str)
 
 

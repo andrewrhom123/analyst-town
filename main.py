@@ -11,13 +11,13 @@ from datetime import date, timezone
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from agents import llm
-from agents.base_analyst import build_track_record
 from agents.briefing import HELP, ask, briefing, parse_command
 from agents.dashboard import dashboard
 from alerts.sms import SmsNotConfigured, recent_alerts, send_sms
@@ -27,13 +27,11 @@ from agents.philosophy import active_charter
 from agents.registry import CoverageError, add_analyst, analyst_info, get_context, list_coverage, reassign_ticker, update_ticker
 from agents.thesis import current_thesis, thesis_history
 from agents import model_versions, office, strategy, voice
-from data_sources.cache import get_cached
 from data_sources.price_feed import chart_series, latest_tick
 from database.db import get_db, init_db
 from database.models import (Analyst, CostEntry, FinancialModel, Interaction, Job, Meeting, Memo, OfficeConversation, Pitch,
                              PriceTick, ResearchCharter, ResearchOutput, Ticker)
 from exports.documents import memo_pdf, model_csv
-from exports.excel_model import build_workbook
 from scheduler.jobs import (
     add_coverage,
     bootstrap_coverage,
@@ -838,12 +836,8 @@ def get_model_xlsx(symbol: str, db: Session = Depends(get_db), model_id: int | N
         fm = db.scalar(select(FinancialModel).where(FinancialModel.ticker_id == ctx.ticker_id).order_by(FinancialModel.date.desc(), FinancialModel.id.desc()).limit(1))
     if fm is None or not (fm.assumptions or {}).get("inputs"):
         raise HTTPException(status_code=404, detail=f"No financial model yet for {ctx.symbol}")
-    research = db.get(ResearchOutput, fm.research_id) if fm.research_id else None
-    record = {**(research.research_memo if research else {}), "date": fm.date.date().isoformat()}
-    sec = get_cached("sec", (ctx.sec_ticker or ctx.symbol).upper(), None)
     meta = model_versions.version_meta(ctx.symbol, fm.id)
-    content = build_workbook(ctx.analyst_name, ctx.symbol, record, fm.assumptions["inputs"], fm.assumptions["outputs"],
-                             build_track_record(ctx.ticker_id, sec), model_meta=meta)
+    content = model_versions.export_workbook(ctx.symbol, fm.id)  # the PM's own workbook once they've uploaded one
     return Response(content=content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": f'attachment; filename="{ctx.symbol}_model_v{meta["version"]}_{fm.date.date().isoformat()}.xlsx"'})
 
@@ -858,13 +852,14 @@ def agent_model_versions(agent_id: str, symbol: str):
 
 @app.post("/agents/{agent_id}/ticker/{symbol}/model/upload", dependencies=[Depends(require_key)])
 async def agent_model_upload(agent_id: str, symbol: str, request: Request, note: str | None = Query(None, max_length=1000)):
-    """Upload an edited model workbook (raw .xlsx body). Blue input cells are read back, validated and recomputed
-    into a new version the agents use from then on; a thesis update is queued to re-anchor the trading levels."""
+    """Upload an edited model workbook (raw .xlsx body). The whole workbook becomes the new version: input cells
+    feed the engine, every tab and the PM's structural changes go to the agents, and agent updates are written
+    back into this file. A thesis update is queued to re-anchor the trading levels."""
     _agent_or_404(agent_id)
     ctx = _ticker_or_404(symbol)
     data = await request.body()
     try:
-        return model_versions.apply_upload(ctx.symbol, data, note)
+        return await run_in_threadpool(model_versions.apply_upload, ctx.symbol, data, note)
     except model_versions.ModelUploadError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

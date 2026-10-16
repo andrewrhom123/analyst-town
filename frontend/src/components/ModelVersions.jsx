@@ -52,10 +52,10 @@ export default function ModelVersions({ agentId, ticker, onUploaded }) {
         )}
       </div>
       <p className="muted" style={{ fontSize: 13, margin: "6px 0 10px" }}>
-        Download the latest model, change any <b style={{ color: "#0000ff" }}>blue</b> input cell (segment revenue and drivers,
-        margins, SBC/D&amp;A/capex, tax, capitalization, WACC / terminal value, bull &amp; bear paths and probabilities), save, and
-        upload it here. The engine recomputes everything as a new version; the agent uses yours from then on, re-anchors its
-        trading levels on it, and at the next deep dive starts from your assumptions and has to justify any change.
+        One model, passed back and forth. Download the latest, change anything (<b style={{ color: "#0000ff" }}>blue</b> inputs,
+        formulas, new rows, segments or tabs), save, and upload it here. Your workbook becomes the model: the agent reads every
+        tab, re-anchors its trading levels on it, and writes its own updates (new data, earnings) into that same file. Download
+        latest always gives you the current workbook, whoever changed it last. Keep the tab names and the hidden _model_map tab.
       </p>
       <div className="mv-actions">
         <a className="btn" href={api.modelDownloadUrl(ticker)} download>⬇ Download latest (v{latest?.version})</a>
@@ -70,7 +70,12 @@ export default function ModelVersions({ agentId, ticker, onUploaded }) {
           <b>Saved as v{result.version}</b> (from v{result.based_on_version}) · probability-weighted value{" "}
           <b>{fmtPrice(result.probability_weighted_price)}</b>
           {result.thesis_update_queued ? " · thesis update queued to re-anchor the levels" : ""}
-          <ul className="list">{result.changes.map((c) => <li key={c.path}>{c.label}: {fmtVal(c.old)} → <b>{fmtVal(c.new)}</b></li>)}</ul>
+          {result.superseded_version ? <div className="faint">Note: built on v{result.based_on_version}; v{result.superseded_version} came after it and its changes aren't in your file.</div> : null}
+          <ul className="list">
+            {result.changes.map((c) => <li key={c.path}>{c.label}: {fmtVal(c.old)} → <b>{fmtVal(c.new)}</b></li>)}
+            {(result.structure || []).map((s) => <li key={s}>{s}</li>)}
+          </ul>
+          {result.missing_inputs?.length ? <div className="faint">Couldn't find these input cells (kept the prior value): {result.missing_inputs.join(", ")}</div> : null}
         </div>
       )}
       <div className="table-wrap">
@@ -85,14 +90,18 @@ export default function ModelVersions({ agentId, ticker, onUploaded }) {
               <td className="mono">{fmtPrice(v.probability_weighted_price)}</td>
               <td className="mono">{fmtPrice(v.dcf_price)}</td>
               <td style={{ textAlign: "left" }}>
-                {v.changes.length ? (
+                {v.changes.length || (v.source === "pm_upload" && v.structure?.length) ? (
                   <button type="button" className="btn small" onClick={() => setOpen(open === v.model_id ? null : v.model_id)}>
-                    {v.changes.length} edit{v.changes.length > 1 ? "s" : ""}
+                    {v.changes.length + (v.source === "pm_upload" ? v.structure.length : 0)} edit{v.changes.length + (v.source === "pm_upload" ? v.structure.length : 0) > 1 ? "s" : ""}
                   </button>
                 ) : <span className="faint">deep dive</span>}
+                {v.workbook && <span className="faint" title="Your workbook (edited by you or written into by the agent)"> · your workbook</span>}
                 {v.note && <span className="faint" title={v.note}> · “{v.note.length > 40 ? `${v.note.slice(0, 40)}…` : v.note}”</span>}
                 {open === v.model_id && (
-                  <ul className="list" style={{ margin: "6px 0 0" }}>{v.changes.map((c) => <li key={c.path}>{c.label}: {fmtVal(c.old)} → {fmtVal(c.new)}</li>)}</ul>
+                  <ul className="list" style={{ margin: "6px 0 0" }}>
+                    {v.changes.map((c) => <li key={c.path}>{c.label}: {fmtVal(c.old)} → {fmtVal(c.new)}</li>)}
+                    {v.source === "pm_upload" && v.structure.map((s) => <li key={s}>{s}</li>)}
+                  </ul>
                 )}
               </td>
               <td><a className="btn small" href={api.modelDownloadUrl(ticker, v.model_id)} download>⬇</a></td>

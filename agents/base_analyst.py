@@ -22,16 +22,17 @@ import json
 import logging
 import operator
 from datetime import date, datetime, timezone
-from typing import Annotated, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 from sqlalchemy import select
 
 from agents import llm
+from agents import model_workbook as mw
 from agents.coverage_files import read_file, refresh_files
 from agents.financial_model import (ModelInputError, ModelInputs, QuarterlyModelInputs, compute_model, compute_quarterly_model,
-                                    describe_for_claude)
+                                    describe_for_claude, is_quarterly)
 from agents.llm import AnalystError
 from agents.philosophy import framework_block
 from agents.registry import FOCUS_METRICS, TickerContext, get_context
@@ -151,7 +152,16 @@ THESIS_GUIDE = """Trading thesis (the active position view the PM manages day to
 - Cross-ticker dependencies: name specific linkages to other names in the pod (see the pod snapshot) or outside it."""
 
 
-def build_system_prompt(ctx: TickerContext) -> str:
+def use_quarterly(ctx: TickerContext, memory: dict | None) -> bool:
+    """Quarterly-model analysts build by quarter, unless the PM's workbook (the shared model) is annual."""
+    model = (memory or {}).get("model")
+    if model and model.get("workbook"):
+        return is_quarterly(model["inputs"])
+    return ctx.quarterly_model
+
+
+def build_system_prompt(ctx: TickerContext, quarterly: bool | None = None) -> str:
+    quarterly = ctx.quarterly_model if quarterly is None else quarterly
     role = {
         "company": "the dedicated equity research analyst",
         "macro": "the team's macro strategist",
@@ -192,7 +202,7 @@ Evidence rules:
 {STYLE_GUIDE}
 
 {MODEL_GUIDE if ctx.has_model else ""}
-{QUARTERLY_MODEL_GUIDE if ctx.has_model and ctx.quarterly_model else ""}
+{QUARTERLY_MODEL_GUIDE if ctx.has_model and quarterly else ""}
 
 {THESIS_GUIDE}
 
@@ -256,7 +266,9 @@ def build_user_prompt(ctx: TickerContext, data: dict, memory: dict, track_record
     if memory["thesis"]:
         sections.append(f"<your_current_trading_thesis>\n{_dump(memory['thesis'])}\n</your_current_trading_thesis>")
     model = memory.get("model")
-    if model and model["source"] == "pm_upload":
+    if model and model.get("workbook"):
+        sections.append(workbook_block(model))
+    elif model and model["source"] == "pm_upload":
         sections.append(
             f"<current_model source=\"PM's edited version\" date=\"{model['date']}\">\n"
             "The PM downloaded your model, edited it and uploaded it; this is now the baseline. Start your model inputs "
@@ -274,6 +286,15 @@ def build_user_prompt(ctx: TickerContext, data: dict, memory: dict, track_record
     if track_record:
         sections.append(f"<your_track_record description=\"your prior next-quarter revenue estimates vs. reported\">\n{_dump(track_record)}\n</your_track_record>")
     return "\n\n".join(sections)
+
+
+def workbook_block(model: dict, max_chars: int = mw.DIGEST_CHARS) -> str:
+    """The PM's workbook (the shared model) plus its input cells as model inputs, for deep dives and rebuilds."""
+    who = "the PM's upload" if model["source"] == "pm_upload" else "your last update written into the PM's workbook"
+    return (f"{mw.WORKBOOK_GUIDE}\n\n{mw.prompt_section(model['workbook'], max_chars)}\n\n"
+            f"<current_model date=\"{model['date']}\" latest_version=\"{who}\" description=\"the workbook's input cells as "
+            f"{MODEL_TOOL} inputs: start from these\">\nPM's note: {model['note'] or 'none'}\n"
+            f"Latest changes: {_dump(model['pm_changes'][:40])}\n{_dump(model['inputs'])}\n</current_model>")
 
 
 # --- Memory & track record ---------------------------------------------------------
@@ -337,6 +358,7 @@ class AnalystState(TypedDict, total=False):
     model_outputs: dict
     meta: dict
     research_id: int
+    wb_session: Any  # model_workbook.Session when the latest model is the PM's workbook
 
 
 def _ctx(state: AnalystState) -> TickerContext:
@@ -401,9 +423,14 @@ def load_memory(state: AnalystState) -> dict:
 
 def run_conversation(ctx: TickerContext, data: dict, memory: dict, track_record: list[dict], trigger: str) -> dict:
     """Drive the two-tool conversation. Returns writeup, model inputs/outputs and usage."""
-    model_tool = QUARTERLY_MODEL_TOOL_DEF if ctx.quarterly_model else MODEL_TOOL_DEF
+    quarterly = use_quarterly(ctx, memory)
+    model_tool = QUARTERLY_MODEL_TOOL_DEF if quarterly else MODEL_TOOL_DEF
     tools = [model_tool, RESEARCH_TOOL_DEF] if ctx.has_model else [RESEARCH_TOOL_DEF]
-    system = build_system_prompt(ctx)
+    base_model = memory.get("model") if ctx.has_model else None
+    wb_session = open_workbook_session(ctx, base_model)
+    if wb_session is not None:
+        tools.append(mw.EDIT_TOOL_DEF)
+    system = build_system_prompt(ctx, quarterly)
     messages = [{"role": "user", "content": build_user_prompt(ctx, data, memory, track_record, trigger)}]
     comps = data.get("comps") or {}
     model_inputs = model_outputs = writeup = None
@@ -442,13 +469,16 @@ def run_conversation(ctx: TickerContext, data: dict, memory: dict, track_record:
         for block in tool_uses:
             try:
                 if block.name == MODEL_TOOL:
-                    if ctx.quarterly_model:
+                    if quarterly:
                         model_inputs = QuarterlyModelInputs.model_validate(block.input)
                         model_outputs = compute_quarterly_model(model_inputs, comps, symbol=ctx.symbol)
                     else:
                         model_inputs = ModelInputs.model_validate(block.input)
                         model_outputs = compute_model(model_inputs, comps, symbol=ctx.symbol)
+                    check_workbook_structure(wb_session, base_model, model_inputs.model_dump())
                     content = _dump(describe_for_claude(model_outputs))
+                elif block.name == mw.EDIT_TOOL and wb_session is not None:
+                    content = wb_session.stage(block.input.get("edits") or [])
                 elif block.name == RESEARCH_TOOL:
                     if ctx.has_model and model_outputs is None:
                         raise ModelInputError(f"Call {MODEL_TOOL} first; the memo must use the computed model.")
@@ -457,7 +487,7 @@ def run_conversation(ctx: TickerContext, data: dict, memory: dict, track_record:
                 else:
                     raise ModelInputError(f"Unknown tool {block.name}")
                 results.append({"type": "tool_result", "tool_use_id": block.id, "content": content})
-            except (ValidationError, ModelInputError) as exc:
+            except (ValidationError, ModelInputError, mw.WorkbookError) as exc:
                 logger.info("%s: %s rejected: %s", ctx.symbol, block.name, exc)
                 if block.name == MODEL_TOOL:
                     model_outputs = None
@@ -470,7 +500,28 @@ def run_conversation(ctx: TickerContext, data: dict, memory: dict, track_record:
     if writeup is None:
         raise AnalystError(f"No research submitted after {MAX_TURNS} turns")
     return {"writeup": writeup, "model_inputs": model_inputs, "model_outputs": model_outputs,
-            "usage": usage, "model": model_used, "cost_usd": cost}
+            "usage": usage, "model": model_used, "cost_usd": cost, "wb_session": wb_session}
+
+
+def open_workbook_session(ctx: TickerContext, base_model: dict | None):
+    """A session on the PM's workbook when the latest model carries one (agent edits go into that file)."""
+    if not (base_model and base_model.get("workbook")):
+        return None
+    try:
+        return mw.Session(base_model["model_id"])
+    except Exception:
+        logger.exception("%s: couldn't open the PM's workbook", ctx.symbol)
+        return None
+
+
+def check_workbook_structure(wb_session, base_model: dict | None, new_inputs: dict) -> None:
+    """Inputs are written into the PM's workbook cell by cell, so its periods/segments/drivers must stay the same."""
+    if wb_session is None or base_model is None:
+        return
+    why = mw.structure_mismatch(base_model["inputs"], new_inputs)
+    if why:
+        raise ModelInputError(f"Your inputs are written into the PM's workbook, so keep its structure: {why}. "
+                              f"For rows the PM added, use {mw.EDIT_TOOL}.")
 
 
 def analyze(state: AnalystState) -> dict:
@@ -490,6 +541,7 @@ def analyze(state: AnalystState) -> dict:
         "model_inputs": result["model_inputs"].model_dump() if result["model_inputs"] else None,
         "model_outputs": result["model_outputs"],
         "meta": {"model": result["model"], "usage": result["usage"], "cost_usd": result["cost_usd"]},
+        "wb_session": result["wb_session"],
     }
 
 
@@ -534,16 +586,13 @@ def persist(state: AnalystState) -> dict:
         )
         s.add(research)
         s.flush()
-        if state.get("model_outputs"):
-            s.add(FinancialModel(
-                ticker_id=ctx.ticker_id,
-                research_id=research.id,
-                revenue_projections=state["model_outputs"]["rows"],
-                margin_analysis={"historical_annual": sec_fin.get("annual", []), "historical_quarterly": sec_fin.get("quarterly", [])},
-                assumptions={"inputs": state["model_inputs"], "outputs": state["model_outputs"]},
-            ))
         s.get(Ticker, ctx.ticker_id).last_deep_dive_at = datetime.now(timezone.utc)
         research_id = research.id
+    if state.get("model_outputs"):  # into the PM's workbook when the latest model is theirs
+        from agents.model_versions import save_agent_version
+        save_agent_version(ctx, (state.get("memory") or {}).get("model"), state.get("wb_session"), state["model_inputs"],
+                           state["model_outputs"], state.get("data", {}).get("comps") or {}, research_id,
+                           {"historical_annual": sec_fin.get("annual", []), "historical_quarterly": sec_fin.get("quarterly", [])})
     save_thesis(ctx, state["trading_thesis"], "deep_dive", state.get("trigger", ""), meta["model"])
     refresh_files(ctx.symbol)
     return {"research_id": research_id}

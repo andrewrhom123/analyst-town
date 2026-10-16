@@ -17,11 +17,13 @@ Legend: blue = input, black = formula, green = link to another tab, yellow fill 
 
 import io
 import json
+import re
 from datetime import date, datetime, timezone
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.workbook.defined_name import DefinedName
 
 BLUE = Font(color="0000FF")
 BLACK = Font(color="000000")
@@ -82,6 +84,18 @@ def _fill_forward(values):
 
 
 MAP_SHEET = "_model_map"
+MAP_NAME_PREFIX = "AT_IN_"
+
+
+def map_rows(meta: dict, entries: list[tuple]) -> list[list]:
+    """The hidden map sheet: A1 = version meta (JSON), then one row per mapped cell."""
+    return [[json.dumps(meta)], ["sheet", "cell", "path", "kind", "name"],
+            *[[sheet, cell, path, kind, f"{MAP_NAME_PREFIX}{i}"] for i, (sheet, cell, path, kind) in enumerate(entries, 1)]]
+
+
+def map_names(entries: list[tuple]) -> dict[str, str]:
+    return {f"{MAP_NAME_PREFIX}{i}": "'" + sheet.replace("'", "''") + "'!" + "$" + "$".join(re.match(r"([A-Z]+)(\d+)", cell).groups())
+            for i, (sheet, cell, _path, _kind) in enumerate(entries, 1)}
 
 
 def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, outputs: dict,
@@ -90,7 +104,8 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
     inmap: list[tuple] = []  # (sheet, cell, input path, kind) for every blue input cell
 
     def reg(ws, ref: str, path: str, kind: str = "num") -> None:
-        """kind: num (as is) | pct (cell holds a fraction, input is a percent) | method (1/2) | flag (1/0)."""
+        """kind: num (as is) | pct (cell holds a fraction, input is a percent) | method (1/2) | flag (1/0) |
+        out (a computed result read back, not an input)."""
         inmap.append((ws.title, ref, path, kind))
 
     quarterly = "quarters" in inputs
@@ -497,6 +512,7 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
             _set(sm, f"C{ff_row}", ev_formula, font=font, fmt=MM)
         _set(sm, f"D{ff_row}", equity_formula, font=font, fmt=MM)
         _set(sm, f"E{ff_row}", price_formula, font=font, fmt=PRICE, bold=True)
+        reg(sm, f"E{ff_row}", f"valuation.{method}", "out")  # read back from the PM's workbook (its own valuation)
         _set(sm, f"F{ff_row}", f"=E{ff_row}/$C$6-1", fmt=PCT)
         _set(sm, f"G{ff_row}", basis, font=NOTE)
         ff_row += 1
@@ -606,16 +622,15 @@ def build_workbook(agent_name: str, ticker: str, research: dict, inputs: dict, o
     nt.column_dimensions["C"].width = 110
 
     meta = {"ticker": ticker, "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), **(model_meta or {})}
-    _set(sm, "B4", f"Model version {meta.get('version', '?')} ({meta.get('source_label', 'agent')}). To change it: edit the blue cells "
-                   + ("(Revenue Build and Quarterly P&L quarters, " if quarterly else "(Revenue Build, P&L, ")
-                   + "Summary capitalization, DCF assumptions, Scenarios), save, and upload in Analyst Town. "
-                   "The engine recomputes everything else and the agents use your version from then on.", font=NOTE)
+    _set(sm, "B4", f"Model version {meta.get('version', '?')} ({meta.get('source_label', 'agent')}). Edit anything (blue inputs, "
+                   "formulas, add rows, segments or tabs), save, and upload in Analyst Town: your workbook becomes the one model "
+                   "the agents work from and update. Keep the tab names and the hidden _model_map tab.", font=NOTE)
     mp = wb.create_sheet(MAP_SHEET)
-    mp["A1"] = json.dumps(meta)
-    mp.append(["sheet", "cell", "path", "kind"])
-    for entry in inmap:
-        mp.append(list(entry))
+    for r in map_rows(meta, inmap):
+        mp.append(r)
     mp.sheet_state = "hidden"
+    for name, ref in map_names(inmap).items():  # Excel moves defined names with the cells when rows/columns are inserted
+        wb.defined_names[name] = DefinedName(name, attr_text=ref)
 
     for ws in wb.worksheets:
         ws.sheet_view.showGridLines = False

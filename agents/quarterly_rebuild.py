@@ -8,6 +8,10 @@ and earnings release), the current model as the baseline, and one Claude convers
 no memo - so it costs a fraction of a deep dive. The quarterly model is saved as a new model version, then a
 light thesis update re-anchors the trading levels on it.
 
+When the PM has uploaded their own workbook (agents.model_workbook), it stays the model: a quarterly PM workbook
+is updated in place (the agent's inputs and cell edits are written into it), and a ticker whose PM workbook is
+annual is skipped - restructuring the PM's model is the PM's call.
+
 Spend is tagged "separate_*": outside the daily budget and the build-out pool. Each ticker has a hard cap
 (default $1): output tokens are bounded so one turn can't cross it, and a retry turn only runs if what is left
 covers it. Tickers run one at a time.
@@ -22,10 +26,12 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from agents import llm
+from agents import model_workbook as mw
 from agents.base_analyst import (MODEL_GUIDE, MODEL_TOOL, QUARTERLY_MODEL_GUIDE, QUARTERLY_MODEL_TOOL_DEF, _dump,
-                                 fetch_market, fetch_sec, load_memory)
+                                 check_workbook_structure, fetch_market, fetch_sec, load_memory, open_workbook_session,
+                                 workbook_block)
 from agents.coverage_files import refresh_files
-from agents.financial_model import ModelInputError, QuarterlyModelInputs, compute_quarterly_model, describe_for_claude
+from agents.financial_model import ModelInputError, QuarterlyModelInputs, compute_quarterly_model, describe_for_claude, is_quarterly
 from agents.registry import TickerContext, active_contexts, get_context
 from database.db import session_scope
 from database.models import CostEntry, FinancialModel, ResearchOutput
@@ -38,6 +44,7 @@ MAX_TURNS = 3
 EFFORT = "medium"  # the model inputs are structured numbers, not prose; high effort mostly buys thinking tokens
 SECTION_CHARS = 20000  # per filing section: MD&A and segment notes fit; the rest is truncated
 THESIS_RESERVE_USD = 0.10  # kept back from the cap for the thesis re-anchor
+WORKBOOK_CHARS = 30000  # the PM's workbook digest, trimmed to keep the run under its cap
 
 
 def _max_tokens(budget_usd: float) -> int:
@@ -87,7 +94,9 @@ def _user(ctx: TickerContext, data: dict, memory: dict) -> str:
     if "sec" in data:
         sections.append(f"<sec_filings>\n{_sec_block(data['sec'])}\n</sec_filings>")
     model = memory.get("model")
-    if model:
+    if model and model.get("workbook"):
+        sections.append(workbook_block(model, WORKBOOK_CHARS) + f"\nCall {mw.EDIT_TOOL} (if needed) in the same turn as {MODEL_TOOL}.")
+    elif model:
         whose = "the PM's edited version: keep every PM assumption unless new data contradicts it" if model["source"] == "pm_upload" else "your last model"
         sections.append(f"<current_model date=\"{model['date']}\" description=\"{whose}; rebuild it by quarter\">\n{_dump(model['inputs'])}\n</current_model>")
     if memory.get("thesis"):
@@ -113,6 +122,12 @@ def rebuild_one(symbol: str, max_usd: float = 1.0) -> dict:
                 data.update(out.get("data", {}))
                 errors += out.get("errors", [])
             memory = load_memory(state)["memory"]
+            base_model = memory.get("model")
+            if base_model and base_model.get("workbook") and not is_quarterly(base_model["inputs"]):
+                return {"ticker": ctx.symbol, "status": "skipped", "cost_usd": 0.0,
+                        "error": "your uploaded workbook is annual and stays the model; add quarters to it and upload, or the next deep dive updates it as is"}
+            wb_session = open_workbook_session(ctx, base_model)
+            tools = [QUARTERLY_MODEL_TOOL_DEF] + ([mw.EDIT_TOOL_DEF] if wb_session is not None else [])
             comps = data.get("comps") or {}
             model_cap = max_usd - THESIS_RESERVE_USD
             messages = [{"role": "user", "content": _user(ctx, data, memory)}]
@@ -133,7 +148,7 @@ def rebuild_one(symbol: str, max_usd: float = 1.0) -> dict:
                     output_config={"effort": EFFORT},
                     cache_control={"type": "ephemeral"},
                     system=system,
-                    tools=[QUARTERLY_MODEL_TOOL_DEF],
+                    tools=tools,
                     messages=messages,
                 ) as stream:
                     message = stream.get_final_message()
@@ -149,14 +164,20 @@ def rebuild_one(symbol: str, max_usd: float = 1.0) -> dict:
                     messages.append({"role": "user", "content": f"Please call {MODEL_TOOL} now."})
                     continue
                 results = []
-                for block in tool_uses:
+                for block in sorted(tool_uses, key=lambda b: b.name == MODEL_TOOL):  # stage workbook edits first
                     try:
+                        if block.name == mw.EDIT_TOOL and wb_session is not None:
+                            results.append({"type": "tool_result", "tool_use_id": block.id,
+                                            "content": wb_session.stage(block.input.get("edits") or [])})
+                            continue
                         inputs = QuarterlyModelInputs.model_validate(block.input)
+                        check_workbook_structure(wb_session, base_model, inputs.model_dump())
                         outputs = compute_quarterly_model(inputs, comps, symbol=ctx.symbol)
                         results.append({"type": "tool_result", "tool_use_id": block.id,
                                         "content": _dump(describe_for_claude(outputs)) + "\nSaved. Reply with one line; no further calls."})
-                    except (ValidationError, ModelInputError) as exc:
-                        outputs = None
+                    except (ValidationError, ModelInputError, mw.WorkbookError) as exc:
+                        if block.name == MODEL_TOOL:
+                            outputs = None
                         results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True,
                                         "content": f"Input rejected, fix and call again: {exc}"})
                 if outputs is not None:
@@ -164,7 +185,10 @@ def rebuild_one(symbol: str, max_usd: float = 1.0) -> dict:
                 messages.append({"role": "user", "content": results})
             if outputs is None:
                 raise llm.AnalystError(f"no valid quarterly model after {MAX_TURNS} turns")
-            model_id = _save(ctx, inputs, outputs, data.get("sec") or {}, cost)
+            model_id = _save(ctx, base_model, wb_session, inputs, outputs, comps, data.get("sec") or {}, cost)
+            if model_id is None:
+                return {"ticker": ctx.symbol, "status": "skipped", "cost_usd": round(cost, 4),
+                        "error": "you uploaded a newer version during the run; yours stays the latest"}
             thesis = None
             if cost + config.THESIS_UPDATE_ESTIMATE_USD <= max_usd:
                 from agents.thesis import update_thesis
@@ -205,22 +229,23 @@ def _valuation_line(outputs: dict) -> str:
     return ", ".join(parts)
 
 
-def _save(ctx: TickerContext, inputs: QuarterlyModelInputs, outputs: dict, sec: dict, cost: float) -> int:
+def _save(ctx: TickerContext, base_model: dict | None, wb_session, inputs: QuarterlyModelInputs, outputs: dict, comps: dict,
+          sec: dict, cost: float) -> int | None:
+    """Save as the next version (written into the PM's workbook when the latest model is theirs)."""
+    from agents.model_versions import save_agent_version
+
     fin = sec.get("financials") or {}
     with session_scope() as s:
         research_id = s.scalar(select(ResearchOutput.id).where(ResearchOutput.ticker_id == ctx.ticker_id)
                                .order_by(ResearchOutput.date.desc()).limit(1))
         parent = s.scalar(select(FinancialModel.id).where(FinancialModel.ticker_id == ctx.ticker_id)
                           .order_by(FinancialModel.date.desc()).limit(1))
-        fm = FinancialModel(ticker_id=ctx.ticker_id, research_id=research_id, revenue_projections=outputs["rows"],
-                            margin_analysis={"historical_annual": fin.get("annual", []), "historical_quarterly": fin.get("quarterly", [])},
-                            assumptions={"inputs": inputs.model_dump(), "outputs": outputs, "source": "agent",
-                                         "note": "Quarterly rebuild (model-only run)", "parent_model_id": parent,
-                                         "cost_usd": round(cost, 4)})
-        s.add(fm)
-        s.flush()
-        model_id = fm.id
-    refresh_files(ctx.symbol, ["financial_model.json"])
+    model_id = save_agent_version(
+        ctx, base_model, wb_session, inputs.model_dump(), outputs, comps, research_id,
+        {"historical_annual": fin.get("annual", []), "historical_quarterly": fin.get("quarterly", [])},
+        {"source": "agent", "note": "Quarterly rebuild (model-only run)", "parent_model_id": parent, "cost_usd": round(cost, 4)})
+    if model_id is not None:
+        refresh_files(ctx.symbol, ["financial_model.json"])
     return model_id
 
 

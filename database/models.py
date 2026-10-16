@@ -6,7 +6,7 @@ research, a financial model and five coverage files. Everything the agents spend
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -101,6 +101,20 @@ class FinancialModel(Base):
     margin_analysis: Mapped[dict] = mapped_column(JSON)  # SEC historical tables
     assumptions: Mapped[dict] = mapped_column(JSON)  # {"inputs": ModelInputs, "outputs": computed model}
     date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class ModelWorkbook(Base):
+    """The PM's own workbook for a model version: once the PM uploads one, it is the single model agents and PM
+    pass back and forth (agent updates are written into it cell by cell). Versions without one export fresh."""
+
+    __tablename__ = "model_workbooks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    model_id: Mapped[int] = mapped_column(ForeignKey("financial_models.id"), unique=True, index=True)
+    data: Mapped[bytes] = mapped_column(LargeBinary)  # the .xlsx, untouched except edited cells and the map tab
+    digest: Mapped[str] = mapped_column(Text, default="")  # every tab as text with values, for the agents
+    info: Mapped[dict] = mapped_column(JSON, default=dict)  # {map: [[sheet, cell, path, kind]], structure: [...], valuation: {...}}
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class CoverageFile(Base):
